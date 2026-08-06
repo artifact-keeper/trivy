@@ -213,18 +213,30 @@ RUN /policy/assert-buildinfo.sh /out/trivy /policy/overrides.yaml \
 # the trust store works by actually downloading the DB.
 FROM ${UBI_IMAGE} AS rootfs-builder
 
-RUN mkdir -p /mnt/rootfs && \
+# RPM signature verification is ON. docker/Dockerfile.openscap and
+# Dockerfile.backend pass --nogpgcheck here, which is the usual workaround for
+# a fresh --installroot having no trusted keys yet. Seeding the key into the
+# staged RPM database first removes the need for that, so every package that
+# lands in this image has a verified Red Hat signature. In an image whose
+# entire job is supply-chain assurance, installing unverified RPMs would be a
+# poor look. It also satisfies the STIG's `ensure_redhat_gpgkey_installed`
+# rule as a side effect, since the key stays in the shipped database.
+RUN set -eux; \
+    mkdir -p /mnt/rootfs/etc/pki/rpm-gpg; \
+    cp /etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release /mnt/rootfs/etc/pki/rpm-gpg/; \
+    rpm --root /mnt/rootfs --initdb; \
+    rpm --root /mnt/rootfs --import /mnt/rootfs/etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release; \
     dnf install --installroot /mnt/rootfs --releasever 9 --refresh \
         --setopt=reposdir=/etc/yum.repos.d/ \
-        --setopt=install_weak_deps=0 --nodocs --nogpgcheck -y \
+        --setopt=install_weak_deps=0 --nodocs -y \
         glibc-minimal-langpack \
         ca-certificates \
         tzdata \
-        crypto-policies \
-    && dnf --installroot /mnt/rootfs --releasever 9 \
-        --setopt=reposdir=/etc/yum.repos.d/ --nogpgcheck upgrade -y \
-    && dnf --installroot /mnt/rootfs clean all \
-    && rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/* /mnt/rootfs/tmp/*
+        crypto-policies; \
+    dnf --installroot /mnt/rootfs --releasever 9 \
+        --setopt=reposdir=/etc/yum.repos.d/ upgrade -y; \
+    dnf --installroot /mnt/rootfs clean all; \
+    rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/* /mnt/rootfs/tmp/*
 
 # The `upgrade` step above is what pulls z-stream errata (glibc, openssl-libs,
 # ...) on top of whatever the pinned ubi-micro digest happens to carry. Note
@@ -285,17 +297,12 @@ RUN set -eux; \
       grep -n umask "${f}"; \
     done
 
-# RHEL-09-214010 / the Red Hat release GPG key must be present in the RPM
-# database so package provenance stays verifiable in the shipped image. The
-# staged rootfs carries its own rpmdb (it replaces ubi-micro's on COPY), so
-# the key has to be imported into the staged db explicitly.
+# RHEL-09-214010 / the Red Hat release GPG key must be present in the shipped
+# RPM database so package provenance stays verifiable inside the image. It was
+# imported above (before any package was installed); assert it survived, since
+# the staged rootfs's rpmdb is the one that ends up in the final image.
 RUN set -eux; \
-    dest=/mnt/rootfs/etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release; \
-    if [ ! -f "${dest}" ]; then \
-      install -D -m 0644 /etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release "${dest}"; \
-    fi; \
-    rpm --root /mnt/rootfs --import "${dest}"; \
-    rpm --root /mnt/rootfs -q gpg-pubkey --qf '%{NAME}-%{VERSION}-%{RELEASE}\n'
+    rpm --root /mnt/rootfs -q gpg-pubkey --qf '%{NAME}-%{VERSION}-%{RELEASE}\n' | grep -q .
 
 # Zero the machine-id so every container instance is not identifiable as the
 # same host, and so the value is not baked into a published layer.

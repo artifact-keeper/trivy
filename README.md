@@ -217,6 +217,13 @@ Hat's errata stream.
 * The runtime rootfs is built with `dnf --installroot` and then `dnf upgrade`,
   so each build pulls current z-stream errata rather than inheriting whatever
   the pinned base digest happened to carry.
+* **RPM signature verification is on.** `Dockerfile.openscap` and
+  `Dockerfile.backend` pass `--nogpgcheck` — the usual workaround for a fresh
+  `--installroot` having no trusted keys yet. Here the Red Hat release key is
+  seeded into the staged RPM database *before* the first package is installed,
+  so `gpgcheck=1` holds and every package that lands in the image has a
+  verified signature. Installing unverified RPMs into an image whose whole job
+  is supply-chain assurance would be a poor look.
 * STIG hardening applied to the staged rootfs: FIPS-preferred OpenSSL
   defaults, core dumps disabled, `maxlogins` bounded, `nullok` stripped from
   PAM, umask 077 in `login.defs`/`/etc/profile`/`/etc/bashrc`, zeroed
