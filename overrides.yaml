@@ -19,6 +19,20 @@
 #   * Only the modules listed here may change. apply-overrides.sh diffs the
 #     resolved module graph before/after and fails the build if `go get`
 #     dragged anything else along.
+#   * assert-buildinfo.sh then requires each override to be present IN THE
+#     COMPILED BINARY at its `to` version. A module that is bumped in the
+#     module graph but never linked into the binary is a FAILURE by default,
+#     because "not linked" and "successfully upgraded" are very different
+#     security claims and only one of them clears a CVE. If a dependency
+#     genuinely is unreachable, say so explicitly on the entry:
+#
+#         expect_linked: false
+#         linked_justification: >-
+#           How you determined it is not linked, and why the override is
+#           still worth carrying.
+#
+#     Both fields are required together; the script rejects the opt-out
+#     without a justification.
 #
 # Applied with `go get <module>@<to>` (not `-replace`), so the version
 # recorded in the binary's Go build info — and therefore in any SBOM or

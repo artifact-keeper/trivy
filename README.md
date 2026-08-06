@@ -81,6 +81,8 @@ upstream, and the build enforces that:
 | Upstream no longer pins the `from` version (fix has shipped) | `apply-overrides.sh` | **fails the build** — the entry must be deleted |
 | `go get` moved any module not declared in `overrides.yaml` | `apply-overrides.sh` | **fails the build** |
 | The override is not present in the compiled binary's Go build info | `assert-buildinfo.sh` | **fails the build** |
+| The binary has no readable Go build info, or implausibly few dependency records | `assert-buildinfo.sh` | **fails the build** — it refuses to report "verified" when it checked nothing |
+| A declared module is not linked into the binary at all | `assert-buildinfo.sh` | **fails the build** unless the entry sets `expect_linked: false` *and* a `linked_justification` |
 | The upstream tag moved off the pinned commit | `Dockerfile` | **fails the build** |
 
 ### Dropping an override when upstream ships the fix
@@ -153,7 +155,21 @@ nothing in patch currency.
 
 The Trivy tag is additionally pinned by commit SHA and asserted at build time,
 so a moved or re-pushed upstream tag fails the build rather than silently
-changing what we ship.
+changing what we ship. `TRIVY_VERSION` and `TRIVY_COMMIT` are declared **once**,
+as global `ARG`s above the first `FROM`, and inherited by every stage. They used
+to be repeated in two stages, which meant following the bump instructions below
+and updating only the first pair produced an image whose OCI labels described
+the previous release.
+
+Everything else that feeds a result is pinned too, on the same reasoning:
+
+| Input | Pin | Why |
+|---|---|---|
+| Go toolchain | version + sha256 | Determines the stdlib CVEs in the binary |
+| Upstream Trivy | tag + commit SHA | A moved tag would change what we ship |
+| Base images | manifest-list digest | `9.8` is republished |
+| SCAP datastream | release tag + **sha256** | GitHub release assets are mutable, and this content is the sole input to every compliance number `stig-scan.sh` emits |
+| `openscap-scanner` | exact NEVR | The scanner version changes how rules evaluate; unpinned it is an unrecorded variable in every result. Its version is recorded in the STIG artifacts. |
 
 ### Go toolchain choice
 
@@ -224,10 +240,49 @@ Hat's errata stream.
   so `gpgcheck=1` holds and every package that lands in the image has a
   verified signature. Installing unverified RPMs into an image whose whole job
   is supply-chain assurance would be a poor look.
-* STIG hardening applied to the staged rootfs: FIPS-preferred OpenSSL
-  defaults, core dumps disabled, `maxlogins` bounded, `nullok` stripped from
-  PAM, umask 077 in `login.defs`/`/etc/profile`/`/etc/bashrc`, zeroed
-  `machine-id`, Red Hat GPG key imported into the RPM database.
+* STIG hardening applied to the staged rootfs. The controls that the profile
+  actually scores against a container image are the system crypto policy
+  (`FIPS:STIG`) and umask in `login.defs` / `/etc/profile` / `/etc/bashrc` —
+  see the delta table under [DISA STIG](#disa-stig-compliance) for exactly
+  which rules move. The rest — core dumps disabled, `maxlogins` bounded,
+  `nullok` stripped from PAM, zeroed `machine-id` — are defence-in-depth
+  carried over from the house pattern and score nothing here; they are kept
+  because they cost nothing, not because they earn a number.
+* **The OpenSSL FIPS setting is in the section OpenSSL actually reads.** The
+  house pattern appends a `[algorithm_sect]` block to `openssl.cnf`. That block
+  is inert: the pinned UBI 9 `openssl.cnf` sets `alg_section = evp_properties`
+  and ships `[ evp_properties ]` deliberately empty, so a section by any other
+  name is never consulted. We write `default_properties = fips=yes` into
+  `[evp_properties]`, and `verify-image.sh` fails the build if an orphan
+  `[algorithm_sect]` reappears.
+
+### FIPS
+
+**This image does not provide FIPS-validated cryptography, and nothing in it
+should be read as claiming otherwise.**
+
+The `configure_crypto_policy` STIG rule is satisfied: the image ships
+`FIPS:STIG` in `/etc/crypto-policies/config` and `state/current`, with
+generated back-ends, and `openssl.cnf` requests `fips=yes` EVP properties. That
+is a real, checkable configuration state, and it is what the rule measures.
+
+It is also almost entirely inert for Trivy itself. Trivy is built
+`CGO_ENABLED=0`: it uses Go's own crypto, never links OpenSSL, never reads
+`/etc/crypto-policies`, and does not inherit host FIPS mode. Running this
+container on a `fips=1` host does **not** put Trivy's TLS on a validated
+module. An earlier version of this README said "deploy on a FIPS-enabled host
+if FIPS is required" — that was wrong for a static Go binary, and precisely the
+kind of sentence that becomes a customer finding. It has been removed.
+
+What the crypto policy in this image *does* buy: a correct, STIG-conformant
+system policy for any other consumer of the image's OpenSSL/GnuTLS/NSS
+configuration, and one less CAT I finding for an auditor to chase.
+
+If FIPS-validated cryptography for Trivy's own TLS is ever a requirement, the
+route is a `GOEXPERIMENT=boringcrypto` or `GOFIPS140` toolchain build, which
+changes the binary rather than the configuration around it. That is tracked as
+future work; it is not done, and this image must not be presented as satisfying
+a FIPS requirement until it is.
 
 ### On the shell
 
@@ -286,7 +341,29 @@ like "clean". `make verify` (`scripts/verify-image.sh`) proves otherwise.
 | `/usr/share/zoneinfo/UTC` exists | tzdata is not in `ubi-micro` either |
 | Scans a fixture with known-vulnerable deps and asserts findings > 0 | Catches a scanner that fails open |
 | Scans the image with the Trivy inside it and asserts oras-go is 2.6.2, is not 2.6.1, and CVE-2026-50163 is absent | This is the CVE claim, measured the way the gate measures it |
+| Crypto policy is `FIPS:STIG` in both `config` and `state/current`, back-ends generated | A regression to `DEFAULT` should fail a gate, not just move a number in a report nobody reads |
+| `default_properties = fips=yes` is inside `[evp_properties]`, and no orphan `[algorithm_sect]` exists | The house pattern's block is in a section `openssl.cnf` never points at, so it configures nothing |
 | Non-root UID, no package manager, `/licenses` present, runs `--read-only` | Hardening and licence-compliance regressions |
+
+These scripts are written to fail **closed**, which took two corrections worth
+recording:
+
+* `stig-scan.sh` used to end the OpenSCAP run with `|| true`, and its
+  summariser had no floor on rule count. Feed it an error log — scanner not
+  installed, bad profile, truncated output — and it rendered
+  "Rules evaluated: 0 / **No failing rules.**" and exited 0, straight into a
+  90-day compliance artifact. That is worse than the `|| true` it criticises in
+  `docker-publish.yml`: that one produces *no* evidence, this produced
+  affirmatively reassuring *false* evidence. It now distinguishes oscap's exit
+  codes (0 and 2 mean it ran; anything else is an infrastructure failure that
+  aborts), requires a non-empty results XML, and refuses to write a summary
+  backed by fewer than 400 parsed rule results.
+* `assert-buildinfo.sh` treated "module not found in the build info" as an
+  informational note, so a binary with **no build info at all** printed
+  "all overrides verified" and exited 0. It now requires a main-module record
+  and at least 50 dependency records before it checks anything, and treats a
+  declared-but-unlinked module as a failure unless the override entry sets
+  `expect_linked: false` with a written `linked_justification`.
 
 Two checks are built into the Dockerfile itself, so a broken build never
 produces an image at all: the override must be present in the compiled binary's
@@ -312,42 +389,69 @@ This is the same profile artifact-keeper's `docker-publish.yml` evaluates its
 own images against.
 
 Applicability follows the DoD Enterprise DevSecOps **Container Hardening
-Process Guide** and the DISA **Container Platform SRG**: a container image is
-assessed against the OS baseline of its base layer for the controls that exist
-inside the image, while controls that belong to the host, the kernel, or the
-container platform are the platform's responsibility, not the image's. The RHEL
-9 STIG is a host baseline, so most of it has no counterpart in a single-binary
-image.
+Process Guide (V1R2), Appendix B**, and the DISA **Container Platform SRG**: a
+container image is assessed against the OS baseline of its base layer for the
+controls that exist inside the image, while controls belonging to the host, the
+kernel, or the container platform are the platform's responsibility and are
+documented as not applicable rather than silently dropped. The RHEL 9 STIG is a
+host baseline, so most of it has no counterpart in a single-binary image.
 
-### Current result
+### Current result, against the baseline
 
-Measured on `linux/arm64`, SSG v0.1.81, 484 rules:
+The number that matters is not the absolute pass rate — it is how much of it
+this repository is responsible for. So here is both. Measured on `linux/arm64`,
+SSG v0.1.81, openscap-scanner 1.3.14, 484 rules, using `make stig`:
 
-| Result | Count | Share |
+| Result | Stock `ubi9-micro` | This image |
 |---|---:|---:|
-| notapplicable | 417 | 86.2% |
-| pass | 64 | 13.2% |
-| fail | 2 | 0.4% |
-| notchecked | 1 | 0.2% |
+| notapplicable | 417 (86.2%) | 417 (86.2%) |
+| pass | 61 (12.6%) | **65 (13.4%)** |
+| fail | 5 (1.0%) | **1 (0.2%)** |
+| notchecked | 1 (0.2%) | 1 (0.2%) |
+| **Scored pass rate** | **61 / 66 = 92.4%** | **65 / 66 = 98.5%** |
 
-**Pass rate of scored rules (pass + fail): 64 / 66 = 97.0%.**
+**Read that honestly: the base image already scores 92.4%, and the *notapplicable*
+count is identical.** Our hardening moves exactly four rules:
 
-Stated plainly: this image passes 97% of the rules that can be scored against
-it, and 86% of the RHEL 9 STIG does not apply to a container image at all. It
-is **not** "STIG compliant" in any absolute sense, and no image can be — a STIG
-is assessed against a running system.
+| Rule | Severity | How |
+|---|---|---|
+| `package_crypto-policies_installed` | medium | `crypto-policies` added to the staged rootfs |
+| `configure_crypto_policy` | **high (CAT I)** | author `STIG.pmod`, `update-crypto-policies --set FIPS:STIG` |
+| `accounts_umask_etc_profile` | medium | umask 077 in `/etc/profile` |
+| `accounts_umask_etc_bashrc` | medium | umask 077 in `/etc/bashrc`, including the conditional `umask 022` |
+
+Everything else in the hardening list — core dumps, `maxlogins`, PAM `nullok`,
+`machine-id` — moves nothing the profile scores. It is kept as
+defence-in-depth, not claimed as compliance.
+
+Stated plainly: this image passes 98.5% of the rules that can be scored against
+it, 86% of the RHEL 9 STIG does not apply to a container image at all, and the
+majority of the pass rate is inherited from Red Hat's base image rather than
+earned here. It is **not** "STIG compliant" in any absolute sense, and no image
+can be — a STIG is assessed against a running system.
 
 CI runs this on every build for both architectures and uploads
-`stig-results.xml`, `stig-report.html` and a Markdown summary as artifacts with
-90-day retention.
+`stig-results.xml`, `stig-report.html`, the scanner version and a Markdown
+summary as artifacts with 90-day retention.
 
 ### Documented exceptions
 
-| Rule | Result | Why |
-|---|---|---|
-| `configure_crypto_policy` | fail | The STIG profile refines `var_system_crypto_policy` to the `fips_stig` selector, i.e. the FIPS system-wide crypto policy. FIPS mode is a property of the *host* — a FIPS-validated kernel and modules, `fips=1` at boot — and a container inherits it. An image can set `/etc/crypto-policies/config` to `FIPS` without the back-ends or the kernel matching, which would satisfy the check while changing nothing, and can break TLS to registries. We set FIPS-preferred OpenSSL defaults (`default_properties = fips=yes`) and leave the policy itself to the host. **Deploy on a FIPS-enabled host if FIPS is required.** |
-| `network_configure_name_resolution` | fail | `/etc/resolv.conf` is injected by the container runtime at start time and is not part of the image. Unsatisfiable in an image; owned by the platform. |
-| `security_patches_up_to_date` | notchecked | Requires the RHEL OVAL patch feed, which is not in the SSG datastream. This control is covered instead — and more strictly — by the blocking CVE gate, which fails the build on any fixable CRITICAL/HIGH. |
+Same discipline as `overrides.yaml`: an exception has an owner, a review date,
+an expiry, and a condition that would remove it.
+
+| Rule | Result | Severity | Owner | Reviewed | Expires | Why | Removal condition |
+|---|---|---|---|---|---|---|---|
+| `network_configure_name_resolution` | fail | medium | artifact-keeper platform | 2026-08-06 | 2027-02-06 | `/etc/resolv.conf` is injected by the container runtime at start time and is not part of any image. Writing one into the image would be overwritten at run time, so satisfying this rule inside an image is not possible — only the platform can. | Remove if the deployment platform is ever assessed as one unit with the image, in which case the platform's resolver config carries this control and the exception moves there. |
+| `security_patches_up_to_date` | notchecked | high | artifact-keeper platform | 2026-08-06 | 2027-02-06 | Requires the RHEL OVAL patch feed, which the SSG datastream does not carry, so OpenSCAP cannot evaluate it at all. It is not failing — it is unevaluated. | Covered more strictly by the blocking CVE gate (`--severity CRITICAL,HIGH --ignore-unfixed --exit-code 1`) plus the weekly rebuild. Remove this entry if the OVAL feed is added to the evaluation and the rule starts scoring. |
+
+`configure_crypto_policy` **was** on this list and is not any more. It was
+waived on the reasoning that FIPS is a host property. That reasoning was wrong
+in two ways worth recording, because it is an easy mistake to repeat: the rule
+does not test host FIPS mode at all — it reads `/etc/crypto-policies/config`,
+`state/current` and the generated `back-ends/`, all of which live inside the
+image — and it is **high severity (CAT I)**, the most serious rule the profile
+scores here. It is now fixed rather than waived, by DISA's own documented
+remediation. See [FIPS](#fips) for what that does and does not buy.
 
 Nothing is suppressed to make these numbers look better: there is no
 `.trivyignore` in this repository and no tailoring file that deselects rules.
@@ -379,14 +483,44 @@ Compliance evidence should not disappear as collateral damage of a CVE.
 
 | Job | Blocking | What it does |
 |---|---|---|
-| `build` (amd64, arm64) | yes | Builds each arch, uploads the image tarball so every downstream job measures the same bits |
-| `verify` (amd64, arm64) | yes | `scripts/verify-image.sh` |
+| `build` (amd64, arm64) | yes | Builds each arch **once**. On non-PR events pushes it to GHCR **by digest**; on PRs produces a local tarball instead |
+| `verify` (amd64, arm64) | yes | `scripts/verify-image.sh` against that exact digest |
 | `cve-gate` (amd64, arm64) | **yes** | `--severity CRITICAL,HIGH --ignore-unfixed --exit-code 1`, plus SARIF and a CycloneDX SBOM |
-| `stig` (amd64, arm64) | no (evidence) | OpenSCAP evaluation, artifacts retained 90 days |
-| `publish` | tags only | Multi-arch push to GHCR with build-provenance attestation |
+| `stig` (amd64, arm64) | no (evidence) | OpenSCAP evaluation; still fails on infrastructure errors. Artifacts retained 90 days |
+| `publish` | tags only | `buildx imagetools create` over the gated digests, then provenance attestation. **Does not rebuild** |
 
-Pull requests build, verify, scan and evaluate; they never publish. Every
-action is pinned to a commit SHA.
+### Bytes tested == bytes published
+
+`needs:` orders jobs; it does not make two builds identical. This build is
+deliberately non-hermetic — `dnf --refresh` for current errata, a live
+`git fetch` of the upstream tag, `go get` for the overrides — the GHA cache is
+evictable, and a publish-time rebuild would additionally carry provenance and
+SBOM attestations the tested build never had. A rebuild at publish time would
+therefore sign bytes no scanner ever saw.
+
+So `build` pushes each architecture by digest, `verify`/`cve-gate`/`stig` pull
+those exact digests, and `publish` only assembles a manifest list from them.
+The manifest digest that gets attested is the one covering the gated per-arch
+images. `publish` fails if it does not find exactly two per-arch digests.
+
+Pull requests build, verify, scan and evaluate but push nothing at all —
+`build` keeps the image as a tarball artifact and `publish` is skipped.
+
+### Scheduling
+
+| Workflow | Cadence | Does |
+|---|---|---|
+| `build.yml` | weekly (Mon 04:17 UTC) | Full rebuild at the **same** pinned Trivy version. This is what makes the `dnf upgrade` errata story real: a newly-fixable CRITICAL/HIGH in the UBI base surfaces as a red build here instead of silently blocking an artifact-keeper release later. Weekly rather than daily because it is two arches of a full Go build, and daily publishes would churn the digest for consumers pinning it. |
+| `upstream-watch.yml` | daily (06:41 UTC) | Checks whether a newer upstream Trivy **release** exists. Does not build. Does not bump. Opens or updates one tracking issue per upstream version, pre-answering whether each override is still needed against the new tag. |
+
+`upstream-watch` deliberately does not open a bump PR. `apply-overrides.sh`
+fails the build when the pinned source no longer contains an override's `from`
+version, because that is the signal the override should be **deleted** — and
+deciding that upstream's fix really is the same fix is a human judgement. A bot
+that produced a green bump PR would be routing around the one control this
+repository is built on. `workflow_dispatch` remains the emergency lever on both.
+
+Every action is pinned to a commit SHA.
 
 ---
 
@@ -427,8 +561,10 @@ scripts/apply-overrides.sh    applies overrides; fails on stale or undeclared ch
 scripts/assert-buildinfo.sh   proves the override is in the compiled binary
 scripts/verify-image.sh       proves the image is a working scanner
 scripts/stig-scan.sh          OpenSCAP DISA STIG evaluation
+scripts/ci-resolve-image.sh   resolves the build job's output (digest or tarball)
 fixtures/verify/              deliberately vulnerable fixture for the scan test
-.github/workflows/build.yml   build, verify, gate, STIG, publish-on-tag
+.github/workflows/build.yml   build, verify, gate, STIG, publish-on-tag, weekly rebuild
+.github/workflows/upstream-watch.yml  daily upstream-release check; files an issue, never bumps
 ```
 
 ## Licence

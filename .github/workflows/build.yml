@@ -4,12 +4,26 @@
 #
 # JOB GRAPH — read this before reordering anything.
 #
-#   build (matrix amd64, arm64)
+#   build (matrix amd64, arm64)   pushes BY DIGEST on non-PR events
 #     ├── verify   ── functional proof the scanner works
 #     ├── cve-gate ── artifact-keeper's exact CRITICAL/HIGH fixed-only gate  [BLOCKING]
 #     └── stig     ── DISA STIG evidence                                     [EVIDENCE]
 #              │
 #           publish (tags only)  needs: verify + cve-gate
+#                                assembles the manifest list from the SAME
+#                                digests those jobs tested. It does not rebuild.
+#
+# BYTES TESTED == BYTES PUBLISHED. `needs:` only orders jobs; it does not make
+# two builds identical. This build is deliberately non-hermetic (`dnf
+# --refresh` for current errata, a live `git fetch` of the upstream tag, `go
+# get` for the overrides) and the GHA cache is evictable, so a rebuild at
+# publish time could differ from the one that was gated — and signing it would
+# attest bytes no scanner ever saw. So `build` pushes each arch by digest, the
+# downstream jobs pull those exact digests, and `publish` only runs
+# `buildx imagetools create` over them.
+#
+# On pull requests nothing is pushed: `build` produces a tarball artifact
+# instead and the same jobs test that. PRs never publish.
 #
 # `stig` deliberately hangs off `build`, NOT off `cve-gate`. In
 # artifact-keeper's docker-publish.yml the STIG steps live in the same job as
@@ -18,9 +32,8 @@
 # damage of a CVE. Keep these siblings.
 #
 # Every action is pinned to a commit SHA. Every base image, the Trivy tag, the
-# Trivy commit and the Go toolchain are pinned in the Dockerfile.
-#
-# PRs build, verify, scan and evaluate — they never publish.
+# Trivy commit, the Go toolchain, the SCAP content and the OpenSCAP scanner are
+# pinned in the Dockerfile or in scripts/.
 
 name: build
 
@@ -31,12 +44,21 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # Weekly rebuild at the SAME pinned Trivy version. This is what makes the
+    # `dnf upgrade` errata story real: without it the image is only ever rebuilt
+    # when someone touches the repo, so a newly-fixable CRITICAL/HIGH in the UBI
+    # base sits undetected until it blocks an artifact-keeper release. Here it
+    # surfaces as a red build in this repo instead.
+    #
+    # Weekly rather than daily on purpose: this is two architectures of a full
+    # Go build, and a daily publish would churn the digest for downstream
+    # consumers that pin it. workflow_dispatch stays as the emergency lever.
+    - cron: '17 4 * * 1'
 
 permissions:
   contents: read
 
-# Superseding a PR head cancels the older run. Tag runs are never cancelled —
-# a publish must not be interrupted halfway through.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -46,14 +68,15 @@ env:
   IMAGE_NAME: artifact-keeper/trivy
   # artifact-keeper docker-publish.yml Trivy gate, verbatim.
   GATE_SEVERITY: CRITICAL,HIGH
-  SSG_VERSION: v0.1.81
-  STIG_PROFILE: xccdf_org.ssgproject.content_profile_stig
 
 jobs:
   # ---------------------------------------------------------------------------
   build:
     name: build (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -68,7 +91,43 @@ jobs:
         if: matrix.arch != 'amd64'
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
-      - name: Build linux/${{ matrix.arch }}
+      - name: Decide push mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        if: steps.mode.outputs.push == 'true'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- push mode: build once, push by digest, gate that digest ----------
+      # provenance/sbom are enabled HERE, on the build the gate will test, not
+      # bolted on later by a second build.
+      - name: Build and push by digest (linux/${{ matrix.arch }})
+        id: push
+        if: steps.mode.outputs.push == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      # --- PR mode: build locally, publish nothing --------------------------
+      - name: Build locally (linux/${{ matrix.arch }})
+        if: steps.mode.outputs.push != 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -80,18 +139,46 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
-      # Hand the exact bits we built to every downstream job, so verify,
-      # cve-gate and stig all measure the same artifact.
-      - name: Export image
+      - name: Record what was produced
+        id: ref
         run: |
-          docker save ak-trivy:ci-${{ matrix.arch }} -o image-${{ matrix.arch }}.tar
-          ls -lh image-${{ matrix.arch }}.tar
-          echo "### Image size (${{ matrix.arch }}): $(docker image inspect ak-trivy:ci-${{ matrix.arch }} --format '{{.Size}}' | awk '{printf "%.0f MB", $1/1024/1024}')" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          if [ "${{ steps.mode.outputs.push }}" = "true" ]; then
+            DIGEST='${{ steps.push.outputs.digest }}'
+            [ -n "${DIGEST}" ] || { echo "::error::build-push-action returned no digest"; exit 1; }
+            REF="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+            echo "${REF}" > ref.txt
+            # Filename-safe record for the publish job to reassemble.
+            mkdir -p digests
+            touch "digests/${DIGEST#sha256:}"
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+            echo "### Built and pushed by digest (${{ matrix.arch }})" >> "$GITHUB_STEP_SUMMARY"
+            echo "- \`${REF}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            docker save ak-trivy:ci-${{ matrix.arch }} -o image-${{ matrix.arch }}.tar
+            echo "tar:image-${{ matrix.arch }}.tar" > ref.txt
+            SIZE=$(docker image inspect ak-trivy:ci-${{ matrix.arch }} --format '{{.Size}}' | awk '{printf "%.0f MB", $1/1024/1024}')
+            echo "### Built locally (${{ matrix.arch }}), not pushed — ${SIZE}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cat ref.txt
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: image-${{ matrix.arch }}
-          path: image-${{ matrix.arch }}.tar
+          path: |
+            ref.txt
+            image-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 3
+
+      # Consumed only by `publish`, which assembles the manifest list from
+      # exactly these digests.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: steps.mode.outputs.push == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
           retention-days: 3
 
   # ---------------------------------------------------------------------------
@@ -102,6 +189,9 @@ jobs:
     name: verify (${{ matrix.arch }})
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -110,10 +200,16 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
         if: matrix.arch != 'amd64'
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: image-${{ matrix.arch }}
-      - run: docker load -i image-${{ matrix.arch }}.tar
+      - run: ./scripts/ci-resolve-image.sh ref.txt ${{ matrix.arch }} ak-trivy:ci-${{ matrix.arch }}
       - run: ./scripts/verify-image.sh ak-trivy:ci-${{ matrix.arch }}
 
   # ---------------------------------------------------------------------------
@@ -125,6 +221,9 @@ jobs:
     name: CVE gate (${{ matrix.arch }})
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -133,22 +232,29 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
         if: matrix.arch != 'amd64'
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: image-${{ matrix.arch }}
-      - run: docker load -i image-${{ matrix.arch }}.tar
+      - run: ./scripts/ci-resolve-image.sh ref.txt ${{ matrix.arch }} ak-trivy:ci-${{ matrix.arch }}
 
       - name: Prepare scan input
         run: |
+          set -euo pipefail
           mkdir -p scan out
-          cp image-${{ matrix.arch }}.tar scan/image.tar
+          docker save ak-trivy:ci-${{ matrix.arch }} -o scan/image.tar
           chmod 0644 scan/image.tar
           chmod 0777 out
           docker volume create trivy-db-cache
 
       - name: Scan image (CRITICAL,HIGH, fixed only)
         run: |
-          set -o pipefail
+          set -euo pipefail
           docker run --rm \
             -v trivy-db-cache:/home/trivy/.cache/trivy \
             -v "${PWD}/scan:/scan:ro" -v "${PWD}/out:/out" \
@@ -163,6 +269,7 @@ jobs:
           {
             echo "### CVE gate (${{ matrix.arch }})"
             echo ""
+            echo "- Image: \`$(cat ref.txt)\`"
             echo "- Config: \`--severity ${GATE_SEVERITY} --ignore-unfixed --exit-code 1\` (artifact-keeper docker-publish parity)"
           } >> "$GITHUB_STEP_SUMMARY"
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
@@ -204,25 +311,36 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # EVIDENCE, not a gate. Sibling of cve-gate on purpose (see header).
-  # Reports and uploads unconditionally; oscap exits 2 whenever any rule fails,
-  # which is the normal result for a container measured against a host baseline.
+  # It does still FAIL on infrastructure errors: scripts/stig-scan.sh refuses to
+  # emit a summary that is not backed by a real evaluation, because a compliance
+  # artifact that says "no failing rules" because the scanner never ran is worse
+  # than no artifact at all.
   stig:
     name: DISA STIG (${{ matrix.arch }})
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: image-${{ matrix.arch }}
       # No QEMU needed: the image is never executed, only `docker export`ed.
-      - run: docker load -i image-${{ matrix.arch }}.tar
+      - run: ./scripts/ci-resolve-image.sh ref.txt ${{ matrix.arch }} ak-trivy:ci-${{ matrix.arch }}
 
-      - name: Evaluate ${{ env.STIG_PROFILE }}
+      - name: Evaluate DISA STIG profile
         run: ./scripts/stig-scan.sh ak-trivy:ci-${{ matrix.arch }} stig-out
 
       - name: Publish summary
@@ -238,10 +356,14 @@ jobs:
             stig-out/stig-report.html
             stig-out/stig-summary.md
             stig-out/stig-eval.log
+            stig-out/oscap-version.txt
           retention-days: 90
 
   # ---------------------------------------------------------------------------
   # Tags only. Never runs for pull requests.
+  #
+  # Does NOT rebuild. It assembles a manifest list from the per-arch digests
+  # that verify, cve-gate and stig actually tested, then attests that manifest.
   publish:
     name: publish
     if: startsWith(github.ref, 'refs/tags/v')
@@ -252,11 +374,8 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    outputs:
-      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -264,6 +383,12 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
 
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
@@ -281,27 +406,40 @@ jobs:
             org.opencontainers.image.description=Aqua Security Trivy, built from pinned upstream source on Red Hat UBI 9 with documented, auditable dependency overrides. Redistribution of Apache-2.0 software with modifications; see /licenses.
             org.opencontainers.image.vendor=artifact-keeper
 
-      - id: push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            SOURCE_REVISION=${{ github.sha }}
-          cache-from: |
-            type=gha,scope=amd64
-            type=gha,scope=arm64
-          provenance: mode=max
-          sbom: true
+      - name: Assemble manifest list from the gated digests
+        id: manifest
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          DIGESTS=(digests/*)
+          [ "${#DIGESTS[@]}" -eq 2 ] || {
+            echo "::error::expected exactly 2 per-arch digests (amd64, arm64), found ${#DIGESTS[@]}"
+            exit 1
+          }
+          SRCS=()
+          for f in "${DIGESTS[@]}"; do
+            SRCS+=("${REGISTRY}/${IMAGE_NAME}@sha256:$(basename "$f")")
+          done
+          echo "publishing from gated digests:"
+          printf '  %s\n' "${SRCS[@]}"
+
+          TAG_ARGS=()
+          while read -r t; do
+            [ -n "$t" ] && TAG_ARGS+=("-t" "$t")
+          done <<< '${{ steps.meta.outputs.tags }}'
+
+          docker buildx imagetools create "${TAG_ARGS[@]}" "${SRCS[@]}"
+
+          PRIMARY="$(head -1 <<< '${{ steps.meta.outputs.tags }}')"
+          DIGEST="$(docker buildx imagetools inspect "${PRIMARY}" --format '{{.Manifest.Digest}}')"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "primary=${PRIMARY}" >> "$GITHUB_OUTPUT"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
 
       - name: Summary
@@ -309,7 +447,9 @@ jobs:
           {
             echo "### Published"
             echo ""
-            echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` @ \`${{ steps.push.outputs.digest }}\`"
+            echo "- \`${{ steps.manifest.outputs.primary }}\`"
+            echo "- Manifest digest: \`${{ steps.manifest.outputs.digest }}\`"
             echo "- Platforms: linux/amd64, linux/arm64"
+            echo "- Assembled from the per-arch digests that verify + cve-gate tested — no rebuild"
             echo "- Build provenance attestation pushed to the registry"
           } >> "$GITHUB_STEP_SUMMARY"

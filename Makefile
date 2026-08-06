@@ -35,28 +35,31 @@ verify:
 # Scans the image with the trivy inside that same image, using the exact
 # configuration that gates artifact-keeper's publishes. Exits non-zero on a
 # fixable CRITICAL/HIGH — which is the whole point of owning this image.
+# `trap ... EXIT` rather than an rm after the docker run: with `set -e` an
+# image-tarball temp dir would otherwise be left behind on exactly the runs that
+# matter — the failing ones — and these are ~230 MB each.
 gate:
-	@set -e; \
-	tmp=$$(mktemp -d); chmod 0755 $$tmp; \
+	@set -eu; \
+	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT INT TERM; \
+	chmod 0755 $$tmp; \
 	docker save $(IMAGE) -o $$tmp/image.tar; chmod 0644 $$tmp/image.tar; \
 	docker volume create ak-trivy-verify-cache >/dev/null; \
 	docker run --rm -v ak-trivy-verify-cache:/home/trivy/.cache/trivy \
 	    -v $$tmp/image.tar:/scan/image.tar:ro $(IMAGE) \
-	    image --input /scan/image.tar $(GATE_ARGS); \
-	rc=$$?; rm -rf $$tmp; exit $$rc
+	    image --input /scan/image.tar $(GATE_ARGS)
 
 stig:
 	./scripts/stig-scan.sh $(IMAGE) $(STIG_OUT)
 
 sbom:
-	@set -e; \
-	tmp=$$(mktemp -d); chmod 0755 $$tmp; \
+	@set -eu; \
+	tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT INT TERM; \
+	chmod 0755 $$tmp; \
 	docker save $(IMAGE) -o $$tmp/image.tar; chmod 0644 $$tmp/image.tar; \
 	docker volume create ak-trivy-verify-cache >/dev/null; \
 	docker run --rm -v ak-trivy-verify-cache:/home/trivy/.cache/trivy \
 	    -v $$tmp/image.tar:/scan/image.tar:ro $(IMAGE) \
 	    image --input /scan/image.tar --format cyclonedx --quiet > sbom.cdx.json; \
-	rm -rf $$tmp; \
 	echo "wrote sbom.cdx.json"
 
 clean:

@@ -210,6 +210,40 @@ for f in /licenses/LICENSE /licenses/trivy/LICENSE /licenses/trivy/NOTICE \
     fi
 done
 
+# RHEL-09-215105 (CAT I). The STIG scan covers this too, but STIG is evidence
+# and this is a gate: a silent regression to DEFAULT should fail the build, not
+# just move a number in a report nobody reads.
+CP_CONFIG="$(docker run --rm --entrypoint /usr/bin/cat "${IMAGE}" /etc/crypto-policies/config 2>/dev/null | tr -d '[:space:]' || true)"
+CP_STATE="$(docker run --rm --entrypoint /usr/bin/cat "${IMAGE}" /etc/crypto-policies/state/current 2>/dev/null | tr -d '[:space:]' || true)"
+if [ "${CP_CONFIG}" = "FIPS:STIG" ] && [ "${CP_STATE}" = "FIPS:STIG" ]; then
+    pass "system crypto policy is FIPS:STIG (config and state agree)"
+else
+    fail "crypto policy is config='${CP_CONFIG}' state='${CP_STATE}', expected FIPS:STIG in both"
+fi
+
+if docker run --rm --entrypoint /usr/bin/test "${IMAGE}" -s /etc/crypto-policies/back-ends/opensslcnf.config; then
+    pass "crypto-policy back-ends were generated"
+else
+    fail "/etc/crypto-policies/back-ends/opensslcnf.config missing or empty — policy was set but never applied"
+fi
+
+# The house pattern appends an [algorithm_sect] block that OpenSSL never reads,
+# because openssl.cnf points alg_section at evp_properties. Assert the setting
+# is in the section that is actually wired up.
+# ubi-micro has no awk, so read the file out and inspect it here.
+docker run --rm --entrypoint /usr/bin/cat "${IMAGE}" /etc/pki/tls/openssl.cnf > "${WORK}/openssl.cnf" 2>/dev/null || true
+if awk '/^\[[[:space:]]*evp_properties[[:space:]]*\]/{f=1;next} /^\[/{f=0} f && /default_properties[[:space:]]*=[[:space:]]*fips=yes/{ok=1} END{exit !ok}' \
+      "${WORK}/openssl.cnf"; then
+    pass "openssl.cnf sets default_properties=fips=yes inside [evp_properties]"
+else
+    fail "openssl.cnf FIPS default_properties is missing from [evp_properties] (an orphan section would be inert)"
+fi
+if grep -q '^\[algorithm_sect\]' "${WORK}/openssl.cnf"; then
+    fail "openssl.cnf still carries an orphan [algorithm_sect] block that OpenSSL never reads"
+else
+    pass "no orphan [algorithm_sect] block in openssl.cnf"
+fi
+
 # Read-only rootfs with a mounted cache must still work.
 if docker run --rm --read-only --tmpfs /tmp \
       -v "${CACHE_VOL}:/home/trivy/.cache/trivy" "${IMAGE}" --version >/dev/null 2>&1; then

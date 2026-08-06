@@ -43,6 +43,16 @@
 ARG UBI_IMAGE=registry.access.redhat.com/ubi9/ubi@sha256:e79f79172a6779775e1733cb4f49cd5ef03a0703c68ec46c717f93b9ac4a5e71
 ARG UBI_MICRO_IMAGE=registry.access.redhat.com/ubi9/ubi-micro@sha256:b1e86b97028b8fcfb6d85f997c39e6b6b67496163ef8d80d243220a4918e8bef
 
+# --- upstream Trivy pin: SINGLE SOURCE OF TRUTH ---------------------------
+# Declared in the global scope (before any FROM) so every stage inherits the
+# same value by re-declaring `ARG TRIVY_VERSION` with no default. Previously
+# these defaults were repeated in the builder and runtime stages, so bumping
+# only the first one — exactly what README's "how to bump" says to do —
+# produced an image whose labels described the PREVIOUS release. Do not
+# reintroduce a second default.
+ARG TRIVY_VERSION=v0.73.0
+ARG TRIVY_COMMIT=40c73e5d6166dcc0346a1ab4e94499d1572854e4
+
 
 # =============================================================================
 # Stage 1: Go toolchain
@@ -99,11 +109,11 @@ ENV PATH=/usr/local/go/bin:$PATH \
 # =============================================================================
 FROM toolchain AS builder
 
-# Pinned upstream release. TRIVY_COMMIT is asserted against the tag so a
-# re-tagged or moved upstream tag fails the build instead of silently
-# changing what we ship.
-ARG TRIVY_VERSION=v0.73.0
-ARG TRIVY_COMMIT=40c73e5d6166dcc0346a1ab4e94499d1572854e4
+# Inherited from the global ARGs at the top of this file — no defaults here.
+# TRIVY_COMMIT is asserted against the tag so a re-tagged or moved upstream tag
+# fails the build instead of silently changing what we ship.
+ARG TRIVY_VERSION
+ARG TRIVY_COMMIT
 ARG TRIVY_REPO=https://github.com/aquasecurity/trivy.git
 
 WORKDIR /src
@@ -263,10 +273,58 @@ RUN echo 'trivy:x:1001:0:Trivy Scanner:/home/trivy:/sbin/nologin' >> /mnt/rootfs
 # Same controls as docker/Dockerfile.openscap. See README.md "DISA STIG" for
 # the profile we evaluate against and the documented N/A exceptions.
 
-# CCI-000803 / crypto policy: FIPS-preferred OpenSSL defaults.
-RUN if [ -f /mnt/rootfs/etc/pki/tls/openssl.cnf ]; then \
-      printf '\n[algorithm_sect]\ndefault_properties = fips=yes\n' >> /mnt/rootfs/etc/pki/tls/openssl.cnf; \
-    fi
+# RHEL-09-215105 / SV-258241r1184293_rule / CCE-83450-7 — configure_crypto_policy.
+# SEVERITY: high (CAT I). This is the highest-severity rule the profile scores
+# against this image, and it is satisfiable at build time.
+#
+# The rule does NOT test host FIPS mode. It reads files that live inside the
+# image: /etc/crypto-policies/config, state/current, and the generated
+# back-ends/. The STIG profile refines var_system_crypto_policy to the
+# `fips_stig` selector, whose value is the literal string "FIPS:STIG", and
+# SSG's own remediation is simply `update-crypto-policies --set FIPS:STIG`.
+#
+# UBI 9's crypto-policies package ships no STIG.pmod (only AD-SUPPORT,
+# ECDHE-ONLY, NO-ENFORCE-EMS, NO-SHA1, OSPP, PQ, SHA1), so the module has to be
+# authored before the policy can reference it. Contents are the standard RHEL 9
+# STIG module: no SHA-1 in certificates, 2048-bit RSA floor.
+#
+# The generator is a Python script with no --root option and the staged rootfs
+# has no interpreter, so the policy is generated here and the resulting tree is
+# copied in. Both sides are the same UBI 9 base and the same crypto-policies
+# package (aligned by the upgrade below), and every generated artefact is
+# architecture-independent text.
+#
+# NOTE ON WHAT THIS DOES AND DOES NOT BUY: see README "FIPS". Trivy is built
+# CGO_ENABLED=0 and never links OpenSSL, so this configures the image's crypto
+# policy for any OTHER consumer of it — it does not make Trivy's own TLS
+# FIPS-validated, and this image does not claim FIPS-validated cryptography.
+RUN set -eux; \
+    dnf upgrade -y --nodocs crypto-policies crypto-policies-scripts; \
+    mkdir -p /etc/crypto-policies/policies/modules; \
+    printf '# DISA STIG for Red Hat Enterprise Linux 9 policy module\nsha1_in_certs = 0\nmin_rsa_size = 2048\n' \
+        > /etc/crypto-policies/policies/modules/STIG.pmod; \
+    update-crypto-policies --no-reload --set FIPS:STIG; \
+    test "$(update-crypto-policies --show)" = "FIPS:STIG"; \
+    rm -rf /mnt/rootfs/etc/crypto-policies; \
+    cp -a /etc/crypto-policies /mnt/rootfs/etc/crypto-policies; \
+    test "$(cat /mnt/rootfs/etc/crypto-policies/config)" = "FIPS:STIG"; \
+    test "$(cat /mnt/rootfs/etc/crypto-policies/state/current)" = "FIPS:STIG"; \
+    test -s /mnt/rootfs/etc/crypto-policies/back-ends/opensslcnf.config
+
+# FIPS-preferred OpenSSL EVP defaults.
+#
+# The house pattern (docker/Dockerfile.openscap) appends a `[algorithm_sect]`
+# block to openssl.cnf. That block is INERT: the pinned UBI 9 openssl.cnf sets
+# `alg_section = evp_properties` and ships `[ evp_properties ]` deliberately
+# empty, so OpenSSL never reads a section by any other name. Writing into the
+# section openssl.cnf actually points at is the difference between configuring
+# something and appending a comment.
+RUN set -eux; \
+    cnf=/mnt/rootfs/etc/pki/tls/openssl.cnf; \
+    test -f "${cnf}"; \
+    grep -q '^[[:space:]]*alg_section[[:space:]]*=[[:space:]]*evp_properties' "${cnf}"; \
+    sed -i '/^\[[[:space:]]*evp_properties[[:space:]]*\]/a default_properties = fips=yes' "${cnf}"; \
+    awk '/^\[[[:space:]]*evp_properties[[:space:]]*\]/{f=1;next} /^\[/{f=0} f && /default_properties[[:space:]]*=[[:space:]]*fips=yes/{found=1} END{exit !found}' "${cnf}"
 
 # RHEL-09-213010 / disable core dumps (a core of a scanner process can contain
 # registry credentials and scanned artifact contents).
@@ -319,8 +377,10 @@ RUN rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/* /mnt/rootfs/tmp/* && \
 # =============================================================================
 FROM ${UBI_MICRO_IMAGE}
 
-ARG TRIVY_VERSION=v0.73.0
-ARG TRIVY_COMMIT=40c73e5d6166dcc0346a1ab4e94499d1572854e4
+# Inherited from the global ARGs at the top of this file — no defaults here,
+# so the labels can never describe a different release than the one built.
+ARG TRIVY_VERSION
+ARG TRIVY_COMMIT
 ARG SOURCE_REVISION=unknown
 
 COPY --from=rootfs-builder /mnt/rootfs /
