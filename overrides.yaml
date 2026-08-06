@@ -1,0 +1,66 @@
+# =============================================================================
+# Dependency overrides applied on top of pinned upstream Trivy source.
+# =============================================================================
+#
+# POLICY (see README.md "Override policy"):
+#
+#   * This is NOT a fork. We build the exact upstream tag named in
+#     `trivy_version` and apply only the module bumps listed here.
+#   * An override is only justified when ALL of the following hold:
+#       1. It fixes a CVE that our own CRITICAL/HIGH fixed-only scan gate
+#          flags in the resulting image.
+#       2. Upstream has ALREADY made the same bump (on main, or in a merged
+#          PR) — we do not get ahead of upstream's own judgement.
+#       3. No upstream *release* carries the fix yet.
+#   * Every override carries a `removal_condition` and an `expires` date.
+#     scripts/apply-overrides.sh FAILS THE BUILD if an override is stale
+#     (i.e. the pinned source no longer contains `from`), which is how an
+#     override gets noticed and deleted when upstream finally ships it.
+#   * Only the modules listed here may change. apply-overrides.sh diffs the
+#     resolved module graph before/after and fails the build if `go get`
+#     dragged anything else along.
+#
+# Applied with `go get <module>@<to>` (not `-replace`), so the version
+# recorded in the binary's Go build info — and therefore in any SBOM or
+# `trivy fs` scan of the binary — is the real upgraded version rather than a
+# replacement arrow. That is what makes the "did the override take effect?"
+# assertion in scripts/verify-image.sh meaningful.
+
+version: 1
+
+# The upstream tag these overrides were reviewed against. apply-overrides.sh
+# refuses to run if the Dockerfile's TRIVY_VERSION does not match this — a
+# version bump forces a fresh review of every entry below.
+trivy_version: v0.73.0
+
+overrides:
+  - module: oras.land/oras-go/v2
+    from: v2.6.1
+    to: v2.6.2
+    severity: HIGH
+    advisories:
+      - CVE-2026-50163
+      - GHSA-fxhp-mv3v-67qp
+    summary: >-
+      oras-go tar extraction: a hardlink entry with a relative Linkname is
+      resolved against the process CWD rather than the extraction directory,
+      allowing a crafted OCI artifact to write outside the extract dir.
+      Reachable from Trivy because oras-go performs the OCI pulls behind
+      `trivy image`, `trivy sbom` and the vulnerability-DB download.
+    vulnerable_range: "<= 2.6.1"
+    first_patched: 2.6.2
+    upstream_status: >-
+      Bumped on aquasecurity/trivy main (go.mod pins oras.land/oras-go/v2
+      v2.6.2). No upstream release carries it: v0.73.0 (2026-08-03, latest at
+      time of writing) still pins v2.6.1.
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
+    advisory_reference: https://github.com/advisories/GHSA-fxhp-mv3v-67qp
+    removal_condition: >-
+      DELETE this entry the moment we bump TRIVY_VERSION to an upstream
+      release whose go.mod pins oras.land/oras-go/v2 >= v2.6.2. Check with:
+        git show <tag>:go.mod | grep oras.land/oras-go
+      apply-overrides.sh will fail the build on its own if that happens and
+      this entry is still here, because `from: v2.6.1` will no longer match.
+    expires: 2026-11-03
+    filed_by: artifact-keeper platform
+    reviewed: 2026-08-06

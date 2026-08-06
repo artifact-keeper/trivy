@@ -1,0 +1,302 @@
+# =============================================================================
+# Build, verify, scan and (on tags) publish ghcr.io/artifact-keeper/trivy
+# =============================================================================
+#
+# JOB GRAPH — read this before reordering anything.
+#
+#   build (matrix amd64, arm64)
+#     ├── verify   ── functional proof the scanner works
+#     ├── cve-gate ── artifact-keeper's exact CRITICAL/HIGH fixed-only gate  [BLOCKING]
+#     └── stig     ── DISA STIG evidence                                     [EVIDENCE]
+#              │
+#           publish (tags only)  needs: verify + cve-gate
+#
+# `stig` deliberately hangs off `build`, NOT off `cve-gate`. In
+# artifact-keeper's docker-publish.yml the STIG steps live in the same job as
+# the Trivy scan, so an unrelated CVE finding exits that job and the STIG
+# evidence upload never runs — compliance evidence disappearing as collateral
+# damage of a CVE. Keep these siblings.
+#
+# Every action is pinned to a commit SHA. Every base image, the Trivy tag, the
+# Trivy commit and the Go toolchain are pinned in the Dockerfile.
+#
+# PRs build, verify, scan and evaluate — they never publish.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: artifact-keeper/trivy
+  # artifact-keeper docker-publish.yml Trivy gate, verbatim.
+  GATE_SEVERITY: CRITICAL,HIGH
+  SSG_VERSION: v0.1.81
+  STIG_PROFILE: xccdf_org.ssgproject.content_profile_stig
+
+jobs:
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # Needed for the rootfs-builder stage only: dnf has to resolve
+      # TARGET-arch RPMs. The Go compile itself is cross-compiled on the
+      # native builder, so the expensive part is never emulated.
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        if: matrix.arch != 'amd64'
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Build linux/${{ matrix.arch }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: ak-trivy:ci-${{ matrix.arch }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      # Hand the exact bits we built to every downstream job, so verify,
+      # cve-gate and stig all measure the same artifact.
+      - name: Export image
+        run: |
+          docker save ak-trivy:ci-${{ matrix.arch }} -o image-${{ matrix.arch }}.tar
+          ls -lh image-${{ matrix.arch }}.tar
+          echo "### Image size (${{ matrix.arch }}): $(docker image inspect ak-trivy:ci-${{ matrix.arch }} --format '{{.Size}}' | awk '{printf "%.0f MB", $1/1024/1024}')" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: image-${{ matrix.arch }}
+          path: image-${{ matrix.arch }}.tar
+          retention-days: 3
+
+  # ---------------------------------------------------------------------------
+  # Functional proof: parseable version, working CA trust store (real DB
+  # download), a scan that actually reports findings, and the override
+  # assertion. See scripts/verify-image.sh.
+  verify:
+    name: verify (${{ matrix.arch }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        if: matrix.arch != 'amd64'
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: image-${{ matrix.arch }}
+      - run: docker load -i image-${{ matrix.arch }}.tar
+      - run: ./scripts/verify-image.sh ak-trivy:ci-${{ matrix.arch }}
+
+  # ---------------------------------------------------------------------------
+  # BLOCKING. Scans the image with the Trivy inside that same image, using
+  # artifact-keeper's exact gate configuration. A fixable CRITICAL/HIGH fails
+  # this job and blocks publication — which is the entire reason this repo
+  # exists, so it must never be softened to `|| true`.
+  cve-gate:
+    name: CVE gate (${{ matrix.arch }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        if: matrix.arch != 'amd64'
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: image-${{ matrix.arch }}
+      - run: docker load -i image-${{ matrix.arch }}.tar
+
+      - name: Prepare scan input
+        run: |
+          mkdir -p scan out
+          cp image-${{ matrix.arch }}.tar scan/image.tar
+          chmod 0644 scan/image.tar
+          chmod 0777 out
+          docker volume create trivy-db-cache
+
+      - name: Scan image (CRITICAL,HIGH, fixed only)
+        run: |
+          set -o pipefail
+          docker run --rm \
+            -v trivy-db-cache:/home/trivy/.cache/trivy \
+            -v "${PWD}/scan:/scan:ro" -v "${PWD}/out:/out" \
+            ak-trivy:ci-${{ matrix.arch }} image --input /scan/image.tar \
+              --severity "${GATE_SEVERITY}" --ignore-unfixed \
+              --format json --output /out/scan.json --exit-code 0
+          docker run --rm \
+            -v trivy-db-cache:/home/trivy/.cache/trivy \
+            -v "${PWD}/scan:/scan:ro" -v "${PWD}/out:/out" \
+            ak-trivy:ci-${{ matrix.arch }} image --input /scan/image.tar \
+              --skip-db-update --format sarif --output /out/scan.sarif --exit-code 0
+          {
+            echo "### CVE gate (${{ matrix.arch }})"
+            echo ""
+            echo "- Config: \`--severity ${GATE_SEVERITY} --ignore-unfixed --exit-code 1\` (artifact-keeper docker-publish parity)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("out/scan.json"))
+          v = [x for r in (d.get("Results") or []) for x in (r.get("Vulnerabilities") or [])]
+          print(f"- Fixable CRITICAL/HIGH findings: **{len(v)}**")
+          for x in v:
+              print(f"  - `{x['VulnerabilityID']}` {x.get('PkgName')} {x.get('InstalledVersion')} -> {x.get('FixedVersion')} ({x.get('Severity')})")
+          PY
+
+      # Separate enforcing run so the reports above are always produced first.
+      - name: Enforce gate
+        run: |
+          docker run --rm \
+            -v trivy-db-cache:/home/trivy/.cache/trivy \
+            -v "${PWD}/scan:/scan:ro" \
+            ak-trivy:ci-${{ matrix.arch }} image --input /scan/image.tar \
+              --skip-db-update --severity "${GATE_SEVERITY}" --ignore-unfixed --exit-code 1
+
+      - name: Generate SBOM (CycloneDX)
+        if: always()
+        run: |
+          docker run --rm \
+            -v trivy-db-cache:/home/trivy/.cache/trivy \
+            -v "${PWD}/scan:/scan:ro" -v "${PWD}/out:/out" \
+            ak-trivy:ci-${{ matrix.arch }} image --input /scan/image.tar \
+              --skip-db-update --format cyclonedx --output /out/sbom.cdx.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: scan-${{ matrix.arch }}
+          path: |
+            out/scan.json
+            out/scan.sarif
+            out/sbom.cdx.json
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # EVIDENCE, not a gate. Sibling of cve-gate on purpose (see header).
+  # Reports and uploads unconditionally; oscap exits 2 whenever any rule fails,
+  # which is the normal result for a container measured against a host baseline.
+  stig:
+    name: DISA STIG (${{ matrix.arch }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: image-${{ matrix.arch }}
+      # No QEMU needed: the image is never executed, only `docker export`ed.
+      - run: docker load -i image-${{ matrix.arch }}.tar
+
+      - name: Evaluate ${{ env.STIG_PROFILE }}
+        run: ./scripts/stig-scan.sh ak-trivy:ci-${{ matrix.arch }} stig-out
+
+      - name: Publish summary
+        if: always()
+        run: cat stig-out/stig-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: stig-compliance-${{ matrix.arch }}
+          path: |
+            stig-out/stig-results.xml
+            stig-out/stig-report.html
+            stig-out/stig-summary.md
+            stig-out/stig-eval.log
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------
+  # Tags only. Never runs for pull requests.
+  publish:
+    name: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, cve-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+
+      - id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=arm64
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo ""
+            echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\` @ \`${{ steps.push.outputs.digest }}\`"
+            echo "- Platforms: linux/amd64, linux/arm64"
+            echo "- Build provenance attestation pushed to the registry"
+          } >> "$GITHUB_STEP_SUMMARY"
