@@ -35,7 +35,17 @@ case "${REF}" in
         TARBALL="${REF#tar:}"
         [ -f "${TARBALL}" ] || { echo "tarball not found: ${TARBALL}" >&2; exit 1; }
         echo "resolving from tarball ${TARBALL}"
-        docker load -i "${TARBALL}"
+        # `docker load` restores whatever tag the tarball was saved under, which
+        # is not necessarily the tag this job wants. Re-tag explicitly rather
+        # than relying on them happening to match.
+        LOAD_OUT="$(docker load -i "${TARBALL}")"
+        echo "${LOAD_OUT}"
+        if ! docker image inspect "${LOCAL_TAG}" >/dev/null 2>&1; then
+            LOADED="$(sed -n 's/^Loaded image: //p;s/^Loaded image ID: //p' <<< "${LOAD_OUT}" | head -1)"
+            [ -n "${LOADED}" ] || { echo "could not determine what ${TARBALL} loaded as" >&2; exit 1; }
+            echo "re-tagging ${LOADED} as ${LOCAL_TAG}"
+            docker tag "${LOADED}" "${LOCAL_TAG}"
+        fi
         ;;
     *@sha256:*)
         echo "resolving from registry digest ${REF}"
