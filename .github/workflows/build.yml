@@ -35,6 +35,12 @@ on:
 permissions:
   contents: read
 
+# Superseding a PR head cancels the older run. Tag runs are never cancelled —
+# a publish must not be interrupted halfway through.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: artifact-keeper/trivy
@@ -267,6 +273,13 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long
+          # metadata-action would otherwise overwrite the Dockerfile's title and
+          # description with the GitHub repo's, dropping the Apache-2.0
+          # redistribution statement that has to travel with the image.
+          labels: |
+            org.opencontainers.image.title=artifact-keeper trivy
+            org.opencontainers.image.description=Aqua Security Trivy, built from pinned upstream source on Red Hat UBI 9 with documented, auditable dependency overrides. Redistribution of Apache-2.0 software with modifications; see /licenses.
+            org.opencontainers.image.vendor=artifact-keeper
 
       - id: push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
