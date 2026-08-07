@@ -1,0 +1,4 @@
+# build/verification outputs
+stig-out/
+sbom.cdx.json
+*.tar

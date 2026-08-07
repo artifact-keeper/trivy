@@ -1,0 +1,150 @@
+# =============================================================================
+# Daily check for a newer upstream Trivy release. Does NOT build. Does NOT bump.
+# =============================================================================
+#
+# WHY THIS DOES NOT AUTO-BUMP
+#
+# The override machinery in scripts/apply-overrides.sh deliberately FAILS the
+# build when the pinned source no longer contains an override's `from` version,
+# because that is the signal the override should be DELETED, not carried
+# forward. Deleting an override is a human decision: someone has to confirm
+# upstream's release actually carries the fix, re-read the remaining entries
+# against the new tag, and re-review the diff. A bot that opened a green
+# "bump to v0.74.0" PR would be routing around the one control this repository
+# is built on.
+#
+# So this workflow does exactly one thing: notice, and tell a human. It opens
+# (or updates) a single tracking issue and stops.
+#
+# Frequency: daily is cheap here — one API call, no build. The weekly rebuild
+# in build.yml is the expensive one.
+
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check for a newer Trivy release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Compare pinned version against upstream latest
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Single source of truth: the global ARG in the Dockerfile.
+          PINNED="$(awk -F= '/^ARG TRIVY_VERSION=/{print $2; exit}' Dockerfile)"
+          [ -n "${PINNED}" ] || { echo "::error::could not read ARG TRIVY_VERSION from Dockerfile"; exit 1; }
+          echo "pinned: ${PINNED}"
+
+          # Latest non-prerelease, non-draft release.
+          LATEST="$(gh api repos/aquasecurity/trivy/releases \
+                      --jq '[.[] | select(.draft==false and .prerelease==false)][0].tag_name')"
+          [ -n "${LATEST}" ] || { echo "::error::could not determine upstream latest release"; exit 1; }
+          echo "latest:  ${LATEST}"
+
+          {
+            echo "pinned=${PINNED}"
+            echo "latest=${LATEST}"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "${PINNED}" = "${LATEST}" ]; then
+            echo "newer=false" >> "$GITHUB_OUTPUT"
+            echo "### Trivy pin is current: \`${PINNED}\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Only report FORWARD movement. If the pin is somehow ahead of the
+          # latest release (upstream yanked one), say so rather than filing a
+          # "please upgrade" issue pointing backwards.
+          NEWEST="$(printf '%s\n%s\n' "${PINNED#v}" "${LATEST#v}" | sort -V | tail -1)"
+          if [ "v${NEWEST}" = "${PINNED}" ]; then
+            echo "newer=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::pinned ${PINNED} is NEWER than upstream latest ${LATEST} — upstream may have yanked a release"
+            exit 0
+          fi
+          echo "newer=true" >> "$GITHUB_OUTPUT"
+
+          # Does the new release carry the fix our override exists for? This is
+          # the question a human needs answered first, so answer it up front.
+          gh api "repos/aquasecurity/trivy/contents/go.mod?ref=${LATEST}" \
+            --jq '.content' | base64 -d > /tmp/upstream-go.mod || true
+          {
+            echo "### Overrides against \`${LATEST}\`"
+            echo ""
+            python3 - <<'PY'
+          import re, sys
+          try:
+              import yaml
+          except ImportError:
+              sys.exit(0)
+          doc = yaml.safe_load(open("overrides.yaml")) or {}
+          try:
+              gomod = open("/tmp/upstream-go.mod").read()
+          except OSError:
+              print("- could not fetch upstream go.mod; check each override by hand")
+              sys.exit(0)
+          for ov in doc.get("overrides") or []:
+              mod, frm, to = ov["module"], str(ov["from"]), str(ov["to"])
+              m = re.search(rf'^\s*{re.escape(mod)}\s+(\S+)', gomod, re.M)
+              if not m:
+                  print(f"- `{mod}` — not in the new go.mod; the override is probably stale")
+              elif m.group(1) == frm:
+                  print(f"- `{mod}` — still `{frm}`, override still NEEDED")
+              else:
+                  print(f"- `{mod}` — now `{m.group(1)}` (we force `{to}`); if >= `{to}`, **DELETE the override**")
+          PY
+          } > /tmp/override-status.md
+          cat /tmp/override-status.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.newer == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED: ${{ steps.check.outputs.pinned }}
+          LATEST: ${{ steps.check.outputs.latest }}
+        run: |
+          set -euo pipefail
+          TITLE="Upstream Trivy ${LATEST} is available (pinned: ${PINNED})"
+
+          # One issue per upstream version, reused rather than duplicated daily.
+          EXISTING="$(gh issue list --state open --search "\"${LATEST}\" in:title" \
+                        --json number,title --jq '.[0].number // empty')"
+
+          {
+            echo "Upstream released \`${LATEST}\`. This repository is pinned to \`${PINNED}\`."
+            echo ""
+            cat /tmp/override-status.md 2>/dev/null || true
+            echo ""
+            echo "### To bump"
+            echo ""
+            echo "1. Update \`ARG TRIVY_VERSION\` and \`ARG TRIVY_COMMIT\` at the top of \`Dockerfile\` (single source of truth) and \`trivy_version\` in \`overrides.yaml\`."
+            echo "2. Delete any override the new release already carries. \`scripts/apply-overrides.sh\` will fail the build if you miss one — that failure is the feature."
+            echo "3. Re-read the remaining overrides against the new tag and refresh their \`reviewed\`/\`expires\` dates."
+            echo ""
+            echo "This issue is opened automatically and intentionally does NOT come with a bump PR:"
+            echo "deleting an override is a judgement call about whether upstream's fix is really the same fix."
+            echo ""
+            echo "_Filed by \`.github/workflows/upstream-watch.yml\`._"
+          } > /tmp/issue-body.md
+
+          if [ -n "${EXISTING}" ]; then
+            echo "updating existing issue #${EXISTING}"
+            gh issue edit "${EXISTING}" --body-file /tmp/issue-body.md
+          else
+            gh issue create --title "${TITLE}" --body-file /tmp/issue-body.md
+          fi
