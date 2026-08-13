@@ -73,7 +73,7 @@ reference-storage directory via an unsanitised ref name. Both fixed in go-git
 
 ```
 $ trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 \
-      ghcr.io/artifact-keeper/trivy:v0.73.0-r1
+      ghcr.io/artifact-keeper/trivy:0.73.0-r1
 
 usr/local/bin/trivy (gobinary)   Total: 1 (HIGH: 1, CRITICAL: 0)
   github.com/go-git/go-git/v5  CVE-2026-71556  HIGH  fixed  v5.19.1  ->  5.19.2
