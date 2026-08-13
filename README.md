@@ -58,6 +58,43 @@ usr/local/bin/trivy       0
 exit status 0
 ```
 
+It happened again a week later, which is the point of owning the image:
+
+**CVE-2026-71556** ([GHSA-hc8v-wwc9-vgxm](https://github.com/advisories/GHSA-hc8v-wwc9-vgxm),
+HIGH, CVSS 7.1) — `github.com/go-git/go-git/v5` worktree operations (checkout,
+status, add) resolve symlinks without confining resolution to the worktree
+boundary, so a crafted repository can make go-git read or write outside the
+working directory. Reachable from Trivy: go-git is a direct dependency and backs
+the `trivy repo` scanner, which clones a remote repository and then walks its
+worktree. CVE-2026-71557 (MEDIUM) in the same module writes outside the
+reference-storage directory via an unsanitised ref name. Both fixed in go-git
+5.19.2; Trivy `main` pins 5.19.2, no release does. Measured against the
+**previously published** image, `v0.73.0-r1`, whose only gating finding it was:
+
+```
+$ trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 \
+      ghcr.io/artifact-keeper/trivy:v0.73.0-r1
+
+usr/local/bin/trivy (gobinary)   Total: 1 (HIGH: 1, CRITICAL: 0)
+  github.com/go-git/go-git/v5  CVE-2026-71556  HIGH  fixed  v5.19.1  ->  5.19.2
+exit status 1
+```
+
+Note the shape: `v0.73.0-r1` was gate-clean when it was published on 2026-08-07
+and failed on 2026-08-13 without a single byte changing. Nothing regressed —
+the advisory was published against a dependency the image already shipped. That
+is the same lesson as the oras-go entry and the reason the weekly rebuild and
+`upstream-watch` exist: a green scan is a statement about a moment, not a
+property of an image.
+
+`scripts/verify-image.sh` still asserts only the module named in
+`OVERRIDE_MODULE` (default `oras.land/oras-go/v2`) — it predates there being
+more than one override. That is not a coverage hole today, because
+`scripts/assert-buildinfo.sh` iterates every entry in `overrides.yaml`
+generically and fails the build on any that is absent, at the wrong version, or
+unlinked. Generalising `verify-image.sh` the same way is worth doing before a
+third override lands.
+
 ---
 
 ## Override policy
