@@ -78,3 +78,46 @@ overrides:
     expires: 2026-11-03
     filed_by: artifact-keeper platform
     reviewed: 2026-08-06
+
+  - module: github.com/go-git/go-git/v5
+    from: v5.19.1
+    to: v5.19.2
+    severity: HIGH
+    advisories:
+      - CVE-2026-71556
+      - GHSA-hc8v-wwc9-vgxm
+      - CVE-2026-71557
+      - GHSA-qgq7-7hm3-q39j
+    summary: >-
+      Two worktree/refstore path-confinement bugs in go-git. CVE-2026-71556
+      (HIGH, CVSS 7.1): worktree operations — checkout, status, add — resolve
+      symbolic links inside the working tree without confining resolution to
+      the worktree boundary, so a crafted repository containing a symlink makes
+      go-git read or write outside the intended working directory once the repo
+      is cloned and its worktree is walked. CVE-2026-71557 (MEDIUM, CVSS 6.3):
+      reference names are not sanitised before being joined into on-disk paths
+      under the reference-storage directory, so a crafted ref name containing
+      traversal sequences writes outside it.
+      Reachable from Trivy: go-git is a DIRECT dependency and backs the
+      `trivy repo` scanner, which clones an arbitrary remote repository and
+      then walks its worktree — exactly the clone-then-worktree-operation
+      sequence the advisory describes. That is also the shape of the scan
+      artifact-keeper's scanner-adapter exposes over HTTP, so this is not a
+      dead code path for us.
+    vulnerable_range: "< 5.19.2"
+    first_patched: 5.19.2
+    upstream_status: >-
+      Bumped on aquasecurity/trivy main (go.mod pins github.com/go-git/go-git/v5
+      v5.19.2). No upstream release carries it: v0.73.0 (2026-08-03, still the
+      latest release) pins v5.19.1, as does v0.72.0.
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
+    advisory_reference: https://github.com/advisories/GHSA-hc8v-wwc9-vgxm
+    removal_condition: >-
+      DELETE this entry the moment we bump TRIVY_VERSION to an upstream release
+      whose go.mod pins github.com/go-git/go-git/v5 >= v5.19.2. Check with:
+        git show <tag>:go.mod | grep go-git/go-git
+      apply-overrides.sh will fail the build on its own if that happens and this
+      entry is still here, because `from: v5.19.1` will no longer match.
+    expires: 2026-11-13
+    filed_by: artifact-keeper platform
+    reviewed: 2026-08-13
