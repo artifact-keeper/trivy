@@ -39,10 +39,28 @@ name: build
 
 on:
   push:
-    branches: [main]
+    # The DEFAULT branch is `feat/initial-hardened-trivy-image`, not `main`.
+    # `main` still exists but was superseded; it is listed second so a push to
+    # it is still built rather than silently unbuilt, and so this list does not
+    # quietly drop coverage the day someone pushes there.
+    branches: [feat/initial-hardened-trivy-image, main]
     tags: ['v*']
+  # NO `branches:` filter, on purpose.
+  #
+  # This previously read `branches: [main]` while the repository's default
+  # branch was `feat/initial-hardened-trivy-image`. Every PR is opened against
+  # the default branch, so the filter matched nothing and NO pull request ever
+  # ran build/verify/cve-gate/stig. PR #4 — the v0.74.0 + Go 1.26.7 bump, the
+  # entire reason this image gets republished — merged with only GitGuardian
+  # reporting a status. The blocking CVE gate this repository exists to run had
+  # never run on a PR at all.
+  #
+  # An unfiltered `pull_request:` runs the gate for a PR against ANY base, which
+  # is the behaviour we actually want (this gate is never unwanted) and which
+  # cannot silently switch itself off again if the default branch is renamed or
+  # the repo is re-based onto `main`. Branch filters here are a footgun: they
+  # fail OPEN, producing a green PR with no gate rather than a red one.
   pull_request:
-    branches: [main]
   workflow_dispatch:
   schedule:
     # Weekly rebuild at the SAME pinned Trivy version. This is what makes the
