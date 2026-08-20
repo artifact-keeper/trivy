@@ -31,8 +31,9 @@ crafted OCI artifact can write outside it. Reachable from Trivy: oras-go
 performs the OCI pulls behind `trivy image`, `trivy sbom` and the
 vulnerability-DB download. Fixed in oras-go 2.6.2.
 
-Trivy's `main` branch bumped to 2.6.2. **No Trivy release carries it.** v0.73.0,
-the latest release, still pins 2.6.1. Measured with the pinned upstream image:
+Trivy's `main` branch bumped to 2.6.2. **No Trivy release carried it** at the
+time: v0.73.0, then the latest, still pinned 2.6.1. Measured with the pinned
+upstream image:
 
 ```
 $ trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 \
@@ -58,6 +59,16 @@ usr/local/bin/trivy       0
 exit status 0
 ```
 
+> **Update (2026-08-20, v0.74.0).** Upstream release v0.74.0 pins oras-go
+> v2.6.2 itself, so that override has been deleted and `overrides.yaml` is now
+> empty — the policy's intended end state, reached by the removal condition
+> rather than by anyone remembering. The example above is kept because it is
+> still the clearest statement of *why* the image exists, and because owning
+> the image paid off a second time immediately: v0.74.0 also carries
+> `golang.org/x/mod` v0.40.0, which cleared CVE-2026-56864 / CVE-2026-56865
+> (HIGH) — the findings that were blocking artifact-keeper's v1.8.1 publish.
+> That bump needed **no** override precisely because a release carried it.
+
 ---
 
 ## Override policy
@@ -68,6 +79,28 @@ An override in `overrides.yaml` is justified only when **all** of these hold:
 2. **Upstream has already made the same bump** — on `main`, or in a merged PR.
    We do not get ahead of upstream's judgement about their own dependencies.
 3. No upstream *release* carries the fix yet.
+
+Condition 3 is the one that most often sends you somewhere else, and it is
+easy to skip past when a CVE is blocking a release: if a release *does* carry
+the fix, the answer is to **bump `TRIVY_VERSION` to that release**, not to add
+an override that reproduces it. An override that duplicates a shipped release
+is an undeclared divergence with an expiry date attached — strictly worse than
+the bump it is imitating. Check the release, not just `main`:
+
+```console
+$ gh api repos/aquasecurity/trivy/releases --jq '.[0].tag_name'
+$ git show <tag>:go.mod | grep <module>
+```
+
+An **empty** `overrides` list is a valid and expected state — it means we are
+building pristine upstream. `apply-overrides.sh` says so explicitly rather
+than treating it as a no-op to skip quietly. Overrides are a bridge across the
+gap between an upstream commit and an upstream release; when the release
+lands, the bridge comes down.
+
+Note also that neither an override nor this policy can address a **Go stdlib**
+CVE: there is no module to bump. Those are fixed by raising `GO_VERSION` in
+the `Dockerfile`. See "Go toolchain choice" below.
 
 Each entry records the module, from- and to-version, the advisories, the
 upstream status with a reference, a **removal condition**, and an **expiry
@@ -129,8 +162,8 @@ rebuild and is not endorsed by or affiliated with Aqua Security.
 |---|---|
 | Runtime base | `registry.access.redhat.com/ubi9/ubi-micro` (no package manager) |
 | Builder base | `registry.access.redhat.com/ubi9/ubi` |
-| Trivy | `v0.73.0` @ `40c73e5d6166dcc0346a1ab4e94499d1572854e4` |
-| Go toolchain | 1.26.5 (official tarball, sha256-pinned) |
+| Trivy | `v0.74.0` @ `e1fd17a0ea4a8cf24bc4b4dd7e2cfbf4bb31b994` |
+| Go toolchain | 1.26.7 (official tarball, sha256-pinned) |
 | Platforms | `linux/amd64`, `linux/arm64` |
 | User | `1001:0`, `/sbin/nologin` |
 | Entrypoint | `/usr/local/bin/trivy` |
@@ -173,7 +206,7 @@ Everything else that feeds a result is pinned too, on the same reasoning:
 
 ### Go toolchain choice
 
-Trivy v0.73.0's `go.mod` requires `go 1.26.3`. We build with **1.26.5**, the
+Trivy v0.74.0's `go.mod` requires `go 1.26.3`. We build with **1.26.7**, the
 newest patch of that minor. The Go standard library is compiled into the
 binary, so the toolchain patch level directly determines which stdlib CVEs our
 gate reports against this image; building with the minimum permitted patch
@@ -185,14 +218,14 @@ asserts the toolchain satisfies `go.mod` rather than trusting the pin.
 
 ### Version string compatibility
 
-`trivy --version` prints exactly `Version: 0.73.0`, byte-identical to the
+`trivy --version` prints exactly `Version: 0.74.0`, byte-identical to the
 upstream release, because we pass upstream's own goreleaser ldflag
-(`-X github.com/aquasecurity/trivy/pkg/version/app.ver=0.73.0`). This matters:
+(`-X github.com/aquasecurity/trivy/pkg/version/app.ver=0.74.0`). This matters:
 artifact-keeper's scanner-adapter parses that first line (`parseTrivyVersion`
 in `docker/scanner-adapter/scan.go`) and errors out on a missing or decorated
 string. artifact-keeper provenance lives in OCI labels, not in the version.
 
-The **main module** version embedded in Go build info is likewise `v0.73.0`.
+The **main module** version embedded in Go build info is likewise `v0.74.0`.
 That is not cosmetic. Trivy's own `gobinary` analyzer reads it, so it decides
 what any scan scores the binary against:
 
@@ -200,13 +233,15 @@ what any scan scores the binary against:
 |---|---|---|
 | Dirty tree (naive) | `v0.0.0-20260803094430-40c73e5d6166+dirty` | Trivy reports CVE-2026-54448 (HIGH, "fixed in 0.71.0") and CVE-2024-35192 against a 0.73.0 binary. Fabricated findings that fail our own gate. |
 | `-buildvcs=false` | *(empty)* | Trivy reports **nothing** against the binary, ever. Hides real future Trivy CVEs. Strictly worse. |
-| **What we do** | `v0.73.0` | Same as upstream. Real Trivy CVEs land; fabricated ones do not. |
+| **What we do** | `v0.74.0` | Same as upstream. Real Trivy CVEs land; fabricated ones do not. |
 
 Trivy's ldflags fallback cannot rescue this: `-trimpath` stops Go recording
 `-ldflags` in build info ([go.dev/issue/63432](https://go.dev/issue/63432)) and
 `-s -w` strips the ELF symbols it reads instead. So the build commits the
 override and moves the tag onto that commit, leaving a clean tree at the tag.
-The artifact *is* Trivy 0.73.0 plus the declared patches and is scored as such;
+(With `overrides.yaml` empty, as at v0.74.0, nothing dirties the tree and that
+step is a no-op — the checkout is already clean and already at the tag.)
+The artifact *is* Trivy 0.74.0 plus the declared patches and is scored as such;
 true upstream provenance is preserved in the OCI labels, in
 `/licenses/trivy/BUILDINFO.txt`, and in the commit's parent.
 
@@ -537,13 +572,13 @@ Repointing it is a **separate change in the artifact-keeper repository** and is
 not part of this repo. When it happens it becomes:
 
 ```dockerfile
-FROM ghcr.io/artifact-keeper/trivy:0.73.0 AS trivy
+FROM ghcr.io/artifact-keeper/trivy:0.74.0 AS trivy
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 ```
 
 The binary is drop-in: same version string, same `contrib/*.tpl` templates at
 the same path, same flags. The adapter's `ProbeVersion` still reads
-`Version: 0.73.0`.
+`Version: 0.74.0`.
 
 Alternatively, run this image directly as the scanner rather than copying the
 binary out of it — that is the configuration the hardening and STIG posture in
