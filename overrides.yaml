@@ -45,36 +45,44 @@ version: 1
 # The upstream tag these overrides were reviewed against. apply-overrides.sh
 # refuses to run if the Dockerfile's TRIVY_VERSION does not match this — a
 # version bump forces a fresh review of every entry below.
-trivy_version: v0.73.0
+trivy_version: v0.74.0
 
-overrides:
-  - module: oras.land/oras-go/v2
-    from: v2.6.1
-    to: v2.6.2
-    severity: HIGH
-    advisories:
-      - CVE-2026-50163
-      - GHSA-fxhp-mv3v-67qp
-    summary: >-
-      oras-go tar extraction: a hardlink entry with a relative Linkname is
-      resolved against the process CWD rather than the extraction directory,
-      allowing a crafted OCI artifact to write outside the extract dir.
-      Reachable from Trivy because oras-go performs the OCI pulls behind
-      `trivy image`, `trivy sbom` and the vulnerability-DB download.
-    vulnerable_range: "<= 2.6.1"
-    first_patched: 2.6.2
-    upstream_status: >-
-      Bumped on aquasecurity/trivy main (go.mod pins oras.land/oras-go/v2
-      v2.6.2). No upstream release carries it: v0.73.0 (2026-08-03, latest at
-      time of writing) still pins v2.6.1.
-    upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
-    advisory_reference: https://github.com/advisories/GHSA-fxhp-mv3v-67qp
-    removal_condition: >-
-      DELETE this entry the moment we bump TRIVY_VERSION to an upstream
-      release whose go.mod pins oras.land/oras-go/v2 >= v2.6.2. Check with:
-        git show <tag>:go.mod | grep oras.land/oras-go
-      apply-overrides.sh will fail the build on its own if that happens and
-      this entry is still here, because `from: v2.6.1` will no longer match.
-    expires: 2026-11-03
-    filed_by: artifact-keeper platform
-    reviewed: 2026-08-06
+# EMPTY BY DESIGN — we are building pristine upstream v0.74.0.
+#
+# This is the intended steady state, not a gap. An override exists only to
+# carry a fix during the window between upstream committing it and upstream
+# releasing it; when the release lands, the entry is deleted and the list
+# shrinks back to nothing. apply-overrides.sh handles the empty list
+# explicitly ("no overrides declared — building pristine upstream <tag>").
+#
+# History of what used to be here, so the next reviewer can see the policy
+# working rather than just an empty list:
+#
+#   oras.land/oras-go/v2 v2.6.1 -> v2.6.2  (CVE-2026-50163,
+#   GHSA-fxhp-mv3v-67qp; added 2026-08-06 against v0.73.0). Its
+#   removal_condition read: "DELETE this entry the moment we bump
+#   TRIVY_VERSION to an upstream release whose go.mod pins
+#   oras.land/oras-go/v2 >= v2.6.2." v0.74.0 (2026-08-14) pins v2.6.2, so
+#   that condition is met and the entry is deleted here. Had it been left,
+#   apply-overrides.sh would have failed the build with "overrides.yaml says
+#   upstream pins v2.6.1, but v0.74.0 actually pins v2.6.2" — the staleness
+#   guard doing its job.
+#
+# NOTHING WAS ADDED IN ITS PLACE, and that is the substantive point of this
+# bump. artifact-keeper's Docker Publish was failing on the scanner-adapter
+# with CVE-2026-56864 / CVE-2026-56865 (HIGH) against golang.org/x/mod
+# v0.38.0, fixed in v0.40.0. An override for x/mod would have satisfied
+# policy conditions 1 and 2 (our gate flags it; upstream had already bumped
+# it on main) but FAILS condition 3: upstream release v0.74.0 already carries
+# golang.org/x/mod v0.40.0. When a release carries the fix, the correct
+# action is to bump TRIVY_VERSION to that release — an override would have
+# been an undeclared-divergence-shaped way of doing the same thing, with an
+# expiry date to babysit and a second place for the truth to live.
+#
+# The other half of that publish failure was eight HIGH Go-stdlib findings
+# (CVE-2026-33818/-39821/-46600/-56853/-56858/-56859/-56860/-56862) against
+# stdlib v1.26.5. A stdlib CVE has no module to override; it is fixed by the
+# toolchain. See GO_VERSION in the Dockerfile, bumped 1.26.5 -> 1.26.7 in the
+# same change.
+
+overrides: []

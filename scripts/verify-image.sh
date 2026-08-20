@@ -18,9 +18,18 @@
 #                   `--version` would never catch it. This does.
 #   3. FINDINGS   — scans a fixture with known-vulnerable deps and asserts it
 #                   reports something. Guards against fail-open scanners.
-#   4. OVERRIDE   — scans the shipped trivy binary WITH the shipped trivy and
-#                   asserts oras-go is at the fixed version and that
-#                   CVE-2026-50163 is not reported. This is the CVE claim.
+#   4. DEP PIN    — scans the shipped trivy binary WITH the shipped trivy and
+#                   asserts the tracked module is at the fixed version and that
+#                   its CVE is not reported. This is the CVE claim.
+#                   Until v0.74.0 this tracked oras-go v2.6.1 -> v2.6.2, which
+#                   we carried as an override in overrides.yaml. Upstream
+#                   v0.74.0 pins oras-go v2.6.2 itself, so that override is
+#                   gone and the check now tracks golang.org/x/mod v0.38.0 ->
+#                   v0.40.0 (CVE-2026-56864/-56865), the finding that blocked
+#                   artifact-keeper's v1.8.1 publish. The assertion is the same
+#                   shape either way: it proves the version claim landed IN THE
+#                   SHIPPED BINARY, whether it got there via upstream's pin or
+#                   via one of ours.
 #   5. HARDENING  — non-root numeric UID, no package manager, licences present.
 #
 # Requires: docker, python3.
@@ -28,11 +37,11 @@
 set -euo pipefail
 
 IMAGE="${1:-ak-trivy:dev}"
-EXPECT_VERSION="${EXPECT_VERSION:-0.73.0}"
-OVERRIDE_MODULE="${OVERRIDE_MODULE:-oras.land/oras-go/v2}"
-OVERRIDE_BAD="${OVERRIDE_BAD:-v2.6.1}"
-OVERRIDE_GOOD="${OVERRIDE_GOOD:-v2.6.2}"
-OVERRIDE_CVE="${OVERRIDE_CVE:-CVE-2026-50163}"
+EXPECT_VERSION="${EXPECT_VERSION:-0.74.0}"
+OVERRIDE_MODULE="${OVERRIDE_MODULE:-golang.org/x/mod}"
+OVERRIDE_BAD="${OVERRIDE_BAD:-v0.38.0}"
+OVERRIDE_GOOD="${OVERRIDE_GOOD:-v0.40.0}"
+OVERRIDE_CVE="${OVERRIDE_CVE:-CVE-2026-56864}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_VOL="ak-trivy-verify-cache"
@@ -127,7 +136,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-hdr "4. the dependency override took effect (${OVERRIDE_CVE})"
+hdr "4. the tracked dependency pin took effect (${OVERRIDE_CVE})"
 # Scan the IMAGE with the trivy inside that same image, via a saved tarball.
 # `trivy fs` on the binary path alone does not engage the gobinary analyzer,
 # and more importantly an image scan is precisely what artifact-keeper's
@@ -172,7 +181,7 @@ if [ -z "$(get TOTAL_PKGS)" ]; then
     fail "could not scan the shipped trivy binary"
 else
     [ "$(get HAS_BAD)"  = "no"  ] && pass "${OVERRIDE_MODULE} ${OVERRIDE_BAD} is NOT present" \
-                                  || fail "${OVERRIDE_MODULE} ${OVERRIDE_BAD} IS STILL PRESENT — override did not take"
+                                  || fail "${OVERRIDE_MODULE} ${OVERRIDE_BAD} IS STILL PRESENT — the pin did not take"
     [ "$(get HAS_GOOD)" = "yes" ] && pass "${OVERRIDE_MODULE} ${OVERRIDE_GOOD} is present" \
                                   || fail "${OVERRIDE_MODULE} ${OVERRIDE_GOOD} not reported (got: $(get MODULE_VERSIONS))"
     [ "$(get CVE_PRESENT)" = "no" ] && pass "${OVERRIDE_CVE} is not reported against the shipped binary" \

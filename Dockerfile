@@ -50,8 +50,8 @@ ARG UBI_MICRO_IMAGE=registry.access.redhat.com/ubi9/ubi-micro@sha256:b1e86b97028
 # only the first one — exactly what README's "how to bump" says to do —
 # produced an image whose labels described the PREVIOUS release. Do not
 # reintroduce a second default.
-ARG TRIVY_VERSION=v0.73.0
-ARG TRIVY_COMMIT=40c73e5d6166dcc0346a1ab4e94499d1572854e4
+ARG TRIVY_VERSION=v0.74.0
+ARG TRIVY_COMMIT=e1fd17a0ea4a8cf24bc4b4dd7e2cfbf4bb31b994
 
 
 # =============================================================================
@@ -61,21 +61,30 @@ ARG TRIVY_COMMIT=40c73e5d6166dcc0346a1ab4e94499d1572854e4
 # build. Trivy is CGO_ENABLED=0 and every native-looking dependency
 # (modernc.org/sqlite) is pure Go, so cross-compilation is exact.
 #
-# WHY NOT ubi9/go-toolset: it tops out at Go 1.21, and Trivy v0.73.0's go.mod
+# WHY NOT ubi9/go-toolset: it tops out at Go 1.21, and Trivy v0.74.0's go.mod
 # requires 1.26.3. We install the official upstream Go tarball, pinned by
 # version AND sha256, into the UBI builder instead.
 FROM --platform=$BUILDPLATFORM ${UBI_IMAGE} AS toolchain
 
-# Trivy v0.73.0 go.mod says `go 1.26.3`. We build with the newest patch of
+# Trivy v0.74.0 go.mod says `go 1.26.3`. We build with the newest patch of
 # that minor rather than 1.26.3 exactly: the Go stdlib is compiled into the
 # binary, so the toolchain patch level directly determines which stdlib CVEs
 # our own CRITICAL/HIGH gate reports against this image. Building with the
 # minimum permitted patch would ship known-vulnerable stdlib on purpose.
 # This is a toolchain choice, not a source divergence — no Trivy source or
 # dependency is affected by it.
-ARG GO_VERSION=1.26.5
-ARG GO_SHA256_AMD64=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
-ARG GO_SHA256_ARM64=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49
+#
+# 1.26.5 -> 1.26.7 (2026-08-20): 1.26.5's stdlib was carrying EIGHT HIGH,
+# fixed findings that our own gate reports against this image —
+# CVE-2026-33818 (encoding/asn1), -39821 (x/net/idna), -46600
+# (x/net/dns/dnsmessage), -56853 (net/http), -56858 (html/template), -56859
+# (encoding/xml), -56860 (net/url), -56862 (crypto/tls). All are fixed in
+# 1.26.6; 1.26.7 is the current patch of the minor. Bumping the toolchain is
+# the ONLY fix for a stdlib CVE — there is no dependency to override, which is
+# why this is a GO_VERSION bump and not an overrides.yaml entry.
+ARG GO_VERSION=1.26.7
+ARG GO_SHA256_AMD64=ffb5f8de10c62550dfddab66b36b57030721e0a44a3218e9e1181d7b59f121ca
+ARG GO_SHA256_ARM64=5a4ec883379d51ee9ce1040d5e87f8d35e20387574dd8c947feb01eabc3c1b37
 ARG BUILDARCH
 
 RUN dnf install -y --nodocs --setopt=install_weak_deps=0 \
@@ -155,19 +164,26 @@ RUN chmod +x /policy/*.sh && /policy/apply-overrides.sh /src /policy/overrides.y
 # the pinned upstream image:
 #   * pseudo-version -> Trivy reports CVE-2026-54448 (HIGH, "fixed in 0.71.0")
 #     and CVE-2024-35192 against a 0.73.0 binary. Fabricated findings that
-#     would fail our own gate for no reason.
+#     would fail our own gate for no reason. (Measured on 0.73.0; the
+#     mechanism is not version-specific.)
 #   * -buildvcs=false -> version is empty, and Trivy reports NOTHING against
 #     the binary ever again. That hides real future Trivy CVEs. Strictly worse.
 # Upstream's ldflags fallback (pkg/dependency/parser/golang/binary) cannot
 # rescue us here: `-trimpath` stops Go recording -ldflags in buildinfo
 # (go.dev/issue/63432) and `-s -w` strips the ELF symbols it reads instead.
 #
-# So we commit the override and move the tag onto it. The artifact IS Trivy
-# 0.73.0 plus the declared patches and should be scored as 0.73.0 — which is
-# also exactly what upstream's own `-X app.ver` already asserts. True upstream
-# provenance is preserved in the OCI labels, in /licenses/trivy/BUILDINFO.txt
-# and in the commit's parent. Author/committer dates are pinned to upstream's
-# commit date so the resulting SHA is reproducible.
+# So we commit the override and move the tag onto it. The artifact IS the
+# pinned Trivy release plus the declared patches and should be scored as that
+# release — which is also exactly what upstream's own `-X app.ver` already
+# asserts. True upstream provenance is preserved in the OCI labels, in
+# /licenses/trivy/BUILDINFO.txt and in the commit's parent. Author/committer
+# dates are pinned to upstream's commit date so the resulting SHA is
+# reproducible.
+#
+# When overrides.yaml is empty — as it is at v0.74.0 — the tree is never
+# dirtied and this whole block is a no-op: the checkout is already clean and
+# already at the tag, so the two `test`s below just assert that. The block
+# stays because the next override to be filed must not have to reinvent it.
 RUN set -eux; \
     if [ -n "$(git status --porcelain)" ]; then \
         d="$(git log -1 --format=%cI)"; \
@@ -189,7 +205,7 @@ ARG TARGETARCH
 #   env:     CGO_ENABLED=0, GOEXPERIMENT=jsonv2
 #
 # {{.Version}} in goreleaser is the tag WITHOUT the leading "v", so
-# `trivy --version` prints exactly `Version: 0.73.0` — byte-identical to the
+# `trivy --version` prints exactly `Version: 0.74.0` — byte-identical to the
 # upstream release. That matters: artifact-keeper's scanner-adapter parses
 # that first line (parseTrivyVersion in docker/scanner-adapter/scan.go) and a
 # missing or decorated version string breaks it. AK provenance is recorded in

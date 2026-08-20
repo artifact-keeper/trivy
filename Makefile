@@ -12,7 +12,7 @@
 
 IMAGE           ?= ak-trivy:dev
 PLATFORMS       ?= linux/amd64,linux/arm64
-TRIVY_VERSION   ?= v0.73.0
+TRIVY_VERSION   ?= v0.74.0
 STIG_OUT        ?= stig-out
 
 # artifact-keeper's docker-publish.yml Trivy gate, verbatim:
