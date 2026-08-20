@@ -524,6 +524,25 @@ Compliance evidence should not disappear as collateral damage of a CVE.
 | `stig` (amd64, arm64) | no (evidence) | OpenSCAP evaluation; still fails on infrastructure errors. Artifacts retained 90 days |
 | `publish` | tags only | `buildx imagetools create` over the gated digests, then provenance attestation. **Does not rebuild** |
 
+### Triggers, and why `pull_request` has no branch filter
+
+`build.yml` runs on a push to the default branch or to `main`, on any `v*` tag,
+weekly on a schedule, on `workflow_dispatch`, and on **every** pull request
+regardless of base branch.
+
+That last one is deliberate and was a bug until it wasn't. The trigger read
+`pull_request: branches: [main]` while the repository's default branch was
+`feat/initial-hardened-trivy-image`. Pull requests are opened against the
+default branch, so the filter matched nothing and no PR ever ran `build`,
+`verify`, `cve-gate` or `stig` — PR #4, the v0.74.0 + Go 1.26.7 bump, merged
+with only a secret scanner reporting a status.
+
+A branch filter on a gate **fails open**: the wrong value does not turn the
+checks red, it makes them disappear, and a PR page with no gate on it looks
+exactly like a PR page with a passing gate. So there is no filter here. Running
+the gate on a PR against an unexpected base costs one build; not running it
+ships an unscanned scanner.
+
 ### Bytes tested == bytes published
 
 `needs:` orders jobs; it does not make two builds identical. This build is
