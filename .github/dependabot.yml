@@ -1,0 +1,44 @@
+# Dependency monitoring for the hardened Trivy image build.
+#
+# Modelled on the backend's .github/dependabot.yml, minus the parts that do
+# not apply: the backend's cargo entry and its RustCrypto/`digest` ignore
+# block are specific to that Rust workspace, and its
+# `reviewers: artifact-keeper/maintainers` names a team that does not exist
+# in this org, so copying it would request review from nobody. Labels are
+# left to Dependabot's own `dependencies` default rather than naming custom
+# labels this repository does not define -- Dependabot silently drops labels
+# it cannot find.
+#
+# No `gomod` entry: Trivy's Go source is fetched from pinned upstream during
+# the image build and no go.mod is committed here, so there is no manifest
+# for Dependabot to read. `overrides.yaml` pins transitive Go modules but is
+# a bespoke file format Dependabot does not understand -- those pins still
+# have to be advanced by hand (see the go-git override in #3).
+version: 2
+updates:
+  # Workflow actions used by build.yml and upstream-watch.yml. This image is
+  # the scanner the platform runs, so a compromised action here reaches the
+  # scanning path.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+
+  # Base images for the Dockerfile (ubi9/ubi and ubi9/ubi-micro).
+  #
+  # Caveat worth knowing before relying on this: both bases are pinned by
+  # bare digest via build args --
+  # `ARG UBI_IMAGE=registry.access.redhat.com/ubi9/ubi@sha256:...` consumed
+  # as `FROM ${UBI_IMAGE}`. With no tag alongside the digest there is no
+  # version for Dependabot to compare against, so this entry may stay quiet
+  # even when a newer UBI 9 base ships. Adding a tag next to each digest
+  # (`ubi9/ubi:9.6@sha256:...`) is what would make these bumps flow; that is
+  # a Dockerfile change and is deliberately not bundled into this PR.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
