@@ -47,16 +47,64 @@ version: 1
 # version bump forces a fresh review of every entry below.
 trivy_version: v0.74.0
 
-# EMPTY BY DESIGN — we are building pristine upstream v0.74.0.
+# ONE ENTRY, added 2026-09-03 against v0.74.0. The steady state of this list
+# is EMPTY: an override is a bridge across the window between upstream
+# committing a fix and upstream releasing it, and it comes down as soon as a
+# release carries the fix. The history at the end of this comment is the
+# previous round trip, kept so the next reviewer can see the policy working
+# rather than just a list.
+
+overrides:
+  - module: google.golang.org/grpc
+    from: v1.82.1
+    to: v1.83.1
+    severity: HIGH
+    advisories:
+      - CVE-2026-84304
+      - GHSA-vp52-pcj8-j9qc
+    summary: >-
+      Heap memory exhaustion in gRPC-Go's HTTP/2 stack: a peer that fragments
+      DATA frames into very small pieces makes the receiver buffer far more
+      memory per stream than the flow-control window should permit, so a
+      single connection can drive the process out of memory. grpc enters
+      Trivy's graph indirectly — via the OTLP gRPC exporters
+      (go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc,
+      .../otlpmetric/otlpmetricgrpc) and the Google Cloud SDKs behind
+      `trivy aws` / `trivy cloud` — and is linked into the binary, which is
+      what our gobinary-based gate scores. We do not claim to have traced a
+      reachable attack path through Trivy itself; the gate is not
+      reachability-aware and neither is artifact-keeper's, so the finding
+      blocks the publish either way and the fix is a version bump upstream
+      has already made.
+    vulnerable_range: "< 1.83.1"
+    first_patched: 1.83.1
+    upstream_status: >-
+      Bumped on aquasecurity/trivy main (go.mod pins google.golang.org/grpc
+      v1.83.1). No upstream release carries it: v0.74.0 (2026-08-14, still the
+      latest at time of writing) pins v1.82.1. Verified with:
+        gh api repos/aquasecurity/trivy/contents/go.mod --jq .content \
+          | base64 -d | grep grpc
+        gh api repos/aquasecurity/trivy/releases --jq '.[0].tag_name'
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
+    advisory_reference: https://github.com/advisories/GHSA-vp52-pcj8-j9qc
+    removal_condition: >-
+      DELETE this entry the moment we bump TRIVY_VERSION to an upstream
+      release whose go.mod pins google.golang.org/grpc >= v1.83.1. Check with:
+        git show <tag>:go.mod | grep google.golang.org/grpc
+      apply-overrides.sh will fail the build on its own if that happens and
+      this entry is still here, because `from: v1.82.1` will no longer match.
+    expires: 2026-11-02
+    filed_by: artifact-keeper platform
+    reviewed: 2026-09-03
+    expect_linked: true
+
+# ---------------------------------------------------------------------------
+# History
+# ---------------------------------------------------------------------------
 #
-# This is the intended steady state, not a gap. An override exists only to
-# carry a fix during the window between upstream committing it and upstream
-# releasing it; when the release lands, the entry is deleted and the list
-# shrinks back to nothing. apply-overrides.sh handles the empty list
-# explicitly ("no overrides declared — building pristine upstream <tag>").
-#
-# History of what used to be here, so the next reviewer can see the policy
-# working rather than just an empty list:
+# What used to be in this list, and why it is not any more. Written at the
+# v0.74.0 bump (2026-08-20), when the list went to empty; "here" and "this
+# change" below mean that change, not this one.
 #
 #   oras.land/oras-go/v2 v2.6.1 -> v2.6.2  (CVE-2026-50163,
 #   GHSA-fxhp-mv3v-67qp; added 2026-08-06 against v0.73.0). Its
@@ -85,4 +133,3 @@ trivy_version: v0.74.0
 # toolchain. See GO_VERSION in the Dockerfile, bumped 1.26.5 -> 1.26.7 in the
 # same change.
 
-overrides: []
