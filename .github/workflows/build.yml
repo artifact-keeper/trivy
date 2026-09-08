@@ -105,7 +105,7 @@ jobs:
       # Needed for the rootfs-builder stage only: dnf has to resolve
       # TARGET-arch RPMs. The Go compile itself is cross-compiled on the
       # native builder, so the expensive part is never emulated.
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4
         if: matrix.arch != 'amd64'
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
@@ -216,7 +216,7 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4
         if: matrix.arch != 'amd64'
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         if: github.event_name != 'pull_request'
@@ -248,7 +248,7 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4
         if: matrix.arch != 'amd64'
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         if: github.event_name != 'pull_request'
