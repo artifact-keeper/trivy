@@ -47,9 +47,14 @@ version: 1
 # version bump forces a fresh review of every entry below.
 trivy_version: v0.74.0
 
-# FOUR ENTRIES, added 2026-09-03 against v0.74.0. ONE is the security fix
-# (google.golang.org/grpc); the other three are its minimum-version-selection
-# consequences, marked `mvs_consequence_of` and deleted with it.
+# FOUR ENTRIES, added 2026-09-03 against v0.74.0 and re-reviewed 2026-09-09.
+# ONE is the security fix (google.golang.org/grpc); the other three are its
+# minimum-version-selection consequences, marked `mvs_consequence_of` and
+# deleted with it. The grpc entry's `to` moved v1.83.1 -> v1.83.2 on
+# 2026-09-09 for CVE-2026-84445, published against the very version the
+# 2026-09-03 entry had moved to; `from` is unchanged because upstream's release
+# is unchanged, and the three consequences are unchanged because v1.83.2
+# requires the same versions of them as v1.83.1 did.
 #
 # The steady state of this list is EMPTY: an override is a bridge across the
 # window between upstream committing a fix and upstream releasing it, and it
@@ -60,16 +65,27 @@ trivy_version: v0.74.0
 overrides:
   - module: google.golang.org/grpc
     from: v1.82.1
-    to: v1.83.1
+    to: v1.83.2
     severity: HIGH
     advisories:
       - CVE-2026-84304
       - GHSA-vp52-pcj8-j9qc
+      - CVE-2026-84445
+      - GHSA-2v4p-qf9q-27wj
     summary: >-
-      Heap memory exhaustion in gRPC-Go's HTTP/2 stack: a peer that
-      fragments DATA frames into very small pieces makes the receiver buffer
-      far more memory per stream than the flow-control window should permit,
-      so a single connection can drive the process out of memory. grpc
+      Two advisories, one entry. CVE-2026-84304 (fixed in 1.83.1): heap
+      memory exhaustion in gRPC-Go's HTTP/2 stack — a peer that fragments
+      DATA frames into very small pieces makes the receiver buffer far more
+      memory per stream than the flow-control window should permit, so a
+      single connection can drive the process out of memory. CVE-2026-84445
+      (fixed in 1.82.2 / 1.83.2, published 2026-09-08 against the 1.83.1 this
+      entry first moved to): servers built with xds.NewGRPCServer() panic on
+      a request carrying neither `:authority` nor `Host`, and the per-RPC
+      goroutine does not recover, so the process exits. Trivy runs no gRPC
+      server at all in this image, let alone an xDS one, so the second is
+      not reachable here in any configuration — but the gate is not
+      reachability-aware and the finding is HIGH with a fix, so it blocks the
+      publish exactly as the first did. grpc
       enters Trivy's graph indirectly — via the OTLP gRPC exporters
       (go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc,
       .../otlpmetric/otlpmetricgrpc) and the Google Cloud SDKs behind `trivy
@@ -79,20 +95,23 @@ overrides:
       reachability-aware and neither is artifact-keeper's, so the finding
       blocks the publish either way and the fix is a version bump upstream
       has already made.
-    vulnerable_range: "< 1.83.1"
-    first_patched: 1.83.1
+    vulnerable_range: "< 1.83.2 (CVE-2026-84445: < 1.82.2, >= 1.83.0 < 1.83.2)"
+    first_patched: 1.83.2
     upstream_status: >-
-      Bumped on aquasecurity/trivy main (go.mod pins google.golang.org/grpc
-      v1.83.1). No upstream release carries it: v0.74.0 (2026-08-14, still
-      the latest at time of writing) pins v1.82.1. Verified with:
+      Bumped on aquasecurity/trivy main twice: to v1.83.1 at e000312f
+      (aquasecurity/trivy#11176, 2026-09-03) and to v1.83.2 at 8c905373
+      (aquasecurity/trivy#11212, 2026-09-09); go.mod on main pins
+      google.golang.org/grpc v1.83.2. No upstream release carries either:
+      v0.74.0 (2026-08-14, still the latest at time of writing) pins v1.82.1.
+      Verified with:
         gh api repos/aquasecurity/trivy/contents/go.mod --jq .content \
           | base64 -d | grep grpc
         gh api repos/aquasecurity/trivy/releases --jq '.[0].tag_name'
     upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
-    advisory_reference: https://github.com/advisories/GHSA-vp52-pcj8-j9qc
+    advisory_reference: https://github.com/advisories/GHSA-2v4p-qf9q-27wj
     removal_condition: >-
       DELETE this entry the moment we bump TRIVY_VERSION to an upstream
-      release whose go.mod pins google.golang.org/grpc >= v1.83.1. Check
+      release whose go.mod pins google.golang.org/grpc >= v1.83.2. Check
       with:
         git show <tag>:go.mod | grep google.golang.org/grpc
       apply-overrides.sh will fail the build on its own if that happens and
@@ -100,7 +119,7 @@ overrides:
       match.
     expires: 2026-11-02
     filed_by: artifact-keeper platform
-    reviewed: 2026-09-03
+    reviewed: 2026-09-09
     expect_linked: true
 
   # Not an independent security fix — see `mvs_consequence_of`.
@@ -115,8 +134,9 @@ overrides:
     summary: >-
       GCP resource detector for OpenTelemetry. THIS MODULE IS NOT ITSELF THE
       SUBJECT OF CVE-2026-84304 and no advisory is claimed against v1.32.0.
-      It is declared here because `go get google.golang.org/grpc@v1.83.1`
-      moves it: grpc v1.83.1's own go.mod requires v1.33.0, so
+      It is declared here because `go get google.golang.org/grpc@v1.83.2`
+      moves it: grpc v1.83.2's own go.mod requires v1.33.0 (as v1.83.1's
+      did), so
       minimum-version selection raises it and apply-overrides.sh's
       undeclared-change guard correctly refuses to build until the move is
       written down. Declaring it is the honest option; pinning it back is
@@ -130,7 +150,7 @@ overrides:
     upstream_status: >-
       Identical on aquasecurity/trivy main, which pins
       github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp
-      v1.33.0 alongside grpc v1.83.1. This is not our version choice: it is
+      v1.33.0 alongside grpc v1.83.2. This is not our version choice: it is
       the same module graph upstream already resolved when they made the
       bump. No upstream release carries it — v0.74.0 pins v1.32.0. Verified
       with:
@@ -139,13 +159,13 @@ overrides:
     upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
     removal_condition: >-
       DELETE together with the google.golang.org/grpc entry, at the first
-      upstream release whose go.mod pins grpc >= v1.83.1 — that release
+      upstream release whose go.mod pins grpc >= v1.83.2 — that release
       carries these three with it. This entry has no independent life: if
       the grpc override goes, so does this. Check with:
         git show <tag>:go.mod | grep -E 'detectors/gcp|go-spiffe|grpc '
     expires: 2026-11-02
     filed_by: artifact-keeper platform
-    reviewed: 2026-09-03
+    reviewed: 2026-09-09
     expect_linked: true
 
   # Not an independent security fix — see `mvs_consequence_of`.
@@ -161,8 +181,8 @@ overrides:
       SPIFFE workload API client, used by grpc's xds credentials. THIS
       MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-84304 and no advisory is
       claimed against v2.6.0. It is declared here because `go get
-      google.golang.org/grpc@v1.83.1` moves it: grpc v1.83.1's own go.mod
-      requires v2.7.0, so minimum-version selection raises it and
+      google.golang.org/grpc@v1.83.2` moves it: grpc v1.83.2's own go.mod
+      requires v2.7.0 (as v1.83.1's did), so minimum-version selection raises it and
       apply-overrides.sh's undeclared-change guard correctly refuses to
       build until the move is written down. Declaring it is the honest
       option; pinning it back is not available anyway, because MVS cannot
@@ -175,7 +195,7 @@ overrides:
     first_patched: "n/a"
     upstream_status: >-
       Identical on aquasecurity/trivy main, which pins
-      github.com/spiffe/go-spiffe/v2 v2.7.0 alongside grpc v1.83.1. This is
+      github.com/spiffe/go-spiffe/v2 v2.7.0 alongside grpc v1.83.2. This is
       not our version choice: it is the same module graph upstream already
       resolved when they made the bump. No upstream release carries it —
       v0.74.0 pins v2.6.0. Verified with:
@@ -184,13 +204,13 @@ overrides:
     upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
     removal_condition: >-
       DELETE together with the google.golang.org/grpc entry, at the first
-      upstream release whose go.mod pins grpc >= v1.83.1 — that release
+      upstream release whose go.mod pins grpc >= v1.83.2 — that release
       carries these three with it. This entry has no independent life: if
       the grpc override goes, so does this. Check with:
         git show <tag>:go.mod | grep -E 'detectors/gcp|go-spiffe|grpc '
     expires: 2026-11-02
     filed_by: artifact-keeper platform
-    reviewed: 2026-09-03
+    reviewed: 2026-09-09
     expect_linked: true
 
   # Not an independent security fix — see `mvs_consequence_of`.
@@ -205,8 +225,9 @@ overrides:
     summary: >-
       OpenTelemetry contrib GCP detector. THIS MODULE IS NOT ITSELF THE
       SUBJECT OF CVE-2026-84304 and no advisory is claimed against v1.43.0.
-      It is declared here because `go get google.golang.org/grpc@v1.83.1`
-      moves it: grpc v1.83.1's own go.mod requires v1.44.0, so
+      It is declared here because `go get google.golang.org/grpc@v1.83.2`
+      moves it: grpc v1.83.2's own go.mod requires v1.44.0 (as v1.83.1's
+      did), so
       minimum-version selection raises it and apply-overrides.sh's
       undeclared-change guard correctly refuses to build until the move is
       written down. Declaring it is the honest option; pinning it back is
@@ -220,7 +241,7 @@ overrides:
     upstream_status: >-
       Identical on aquasecurity/trivy main, which pins
       go.opentelemetry.io/contrib/detectors/gcp v1.44.0 alongside grpc
-      v1.83.1. This is not our version choice: it is the same module graph
+      v1.83.2. This is not our version choice: it is the same module graph
       upstream already resolved when they made the bump. No upstream release
       carries it — v0.74.0 pins v1.43.0. Verified with:
         gh api repos/aquasecurity/trivy/contents/go.mod --jq .content \
@@ -228,18 +249,19 @@ overrides:
     upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
     removal_condition: >-
       DELETE together with the google.golang.org/grpc entry, at the first
-      upstream release whose go.mod pins grpc >= v1.83.1 — that release
+      upstream release whose go.mod pins grpc >= v1.83.2 — that release
       carries these three with it. This entry has no independent life: if
       the grpc override goes, so does this. Check with:
         git show <tag>:go.mod | grep -E 'detectors/gcp|go-spiffe|grpc '
     expires: 2026-11-02
     filed_by: artifact-keeper platform
-    reviewed: 2026-09-03
+    reviewed: 2026-09-09
     expect_linked: true
 
 # THE THREE ENTRIES AFTER IT are not independent findings. `go get
-# google.golang.org/grpc@v1.83.1` moves them by minimum-version selection,
-# because grpc v1.83.1's go.mod requires them, and apply-overrides.sh's
+# google.golang.org/grpc@v1.83.2` moves them by minimum-version selection,
+# because grpc v1.83.2's go.mod requires them (at the same versions v1.83.1's
+# did), and apply-overrides.sh's
 # undeclared-change guard fails the build until they are written down. They
 # are declared with the same removal condition and expiry as the grpc entry
 # and are deleted with it; each one records upstream main pinning the same
