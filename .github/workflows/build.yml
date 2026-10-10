@@ -142,6 +142,12 @@ jobs:
           sbom: true
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          # Re-run the dnf package-refresh stage against current errata on
+          # every build; a cached rootfs layer otherwise ships stale base
+          # packages (the 2026-10-10 openssl-libs fix was in the repos and the
+          # PR build still scanned the old build). Same device as
+          # artifact-keeper's docker-publish.yml.
+          no-cache-filters: rootfs-builder
 
       # --- PR mode: build locally, publish nothing --------------------------
       - name: Build locally (linux/${{ matrix.arch }})
@@ -156,6 +162,7 @@ jobs:
             SOURCE_REVISION=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          no-cache-filters: rootfs-builder
 
       - name: Record what was produced
         id: ref
