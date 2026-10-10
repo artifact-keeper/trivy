@@ -82,9 +82,19 @@ FROM --platform=$BUILDPLATFORM ${UBI_IMAGE} AS toolchain
 # 1.26.6; 1.26.7 is the current patch of the minor. Bumping the toolchain is
 # the ONLY fix for a stdlib CVE — there is no dependency to override, which is
 # why this is a GO_VERSION bump and not an overrides.yaml entry.
-ARG GO_VERSION=1.26.7
-ARG GO_SHA256_AMD64=ffb5f8de10c62550dfddab66b36b57030721e0a44a3218e9e1181d7b59f121ca
-ARG GO_SHA256_ARM64=5a4ec883379d51ee9ce1040d5e87f8d35e20387574dd8c947feb01eabc3c1b37
+#
+# 1.26.7 -> 1.26.9 (2026-10-10): Go's paired security release (go1.26.9 /
+# go1.27.2) fixes three HIGH stdlib advisories that artifact-keeper's Docker
+# Publish gate reported against this image's binary (stdlib v1.26.7) on
+# 2026-10-10: CVE-2026-78667 (net/http, DoS via crafted Range headers),
+# CVE-2026-78669 (net/http's bundled HTTP/2, DoS via excessive SETTINGS
+# frames) and CVE-2026-97031 (crypto/tls, DoS via repeated ECH outer extension
+# references). Same rule as before: newest patch of the minor go.mod names,
+# not a jump to 1.27. The x/net half of CVE-2026-78669 is a module and is in
+# overrides.yaml.
+ARG GO_VERSION=1.26.9
+ARG GO_SHA256_AMD64=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d
+ARG GO_SHA256_ARM64=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052
 ARG BUILDARCH
 
 RUN dnf install -y --nodocs --setopt=install_weak_deps=0 \

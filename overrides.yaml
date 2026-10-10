@@ -56,6 +56,26 @@ trivy_version: v0.74.0
 # is unchanged, and the three consequences are unchanged because v1.83.2
 # requires the same versions of them as v1.83.1 did.
 #
+# SEVEN MORE ENTRIES, added 2026-10-10 against v0.74.0: golang.org/x/net
+# v0.58.0 -> v0.60.0 for CVE-2026-78669, plus its six minimum-version-selection
+# consequences (golang.org/x/crypto, mod, sync, sys, term, text), marked
+# `mvs_consequence_of: golang.org/x/net` and deleted with it. The x/net entry
+# is a DECLARED EXCEPTION to policy condition 2 and says so in its own
+# `policy_exception` field; read that before copying its shape.
+#
+# Re-reviewed the four grpc entries on the same day, and condition 3 no
+# longer holds for them: upstream v0.75.0 (2026-10-01) pins grpc v1.83.2 and
+# all three consequences at their `to` versions. The policy answer is to bump
+# TRIVY_VERSION to v0.75.0, which retires all four. It is NOT done in this
+# change, deliberately: artifact-keeper runs the bundled trivy as a CLIENT of
+# its trivy server sidecar (SCANNER_TRIVY_SERVER), and that sidecar is pinned
+# at ghcr.io/aquasecurity/trivy:0.74.0 in artifact-keeper's compose files, so
+# moving the client a minor ahead of the server needs a coordinated change on
+# both sides. v0.75.0's changelog has client/server-mode changes in it
+# (aquasecurity/trivy#11141, #11188). That bump is the next change for this
+# file; it would also shrink the x/net group below to its one primary entry,
+# because v0.75.0 already pins every consequence at its `to` version.
+#
 # The steady state of this list is EMPTY: an override is a bridge across the
 # window between upstream committing a fix and upstream releasing it, and it
 # comes down as soon as a release carries the fix. The History section at the
@@ -256,6 +276,282 @@ overrides:
     expires: 2026-11-02
     filed_by: artifact-keeper platform
     reviewed: 2026-09-09
+    expect_linked: true
+
+  - module: golang.org/x/net
+    from: v0.58.0
+    to: v0.60.0
+    severity: HIGH
+    advisories:
+      - CVE-2026-78669
+    summary: >-
+      CVE-2026-78669 (HIGH, fixed in golang.org/x/net v0.60.0): denial of
+      service in the HTTP/2 implementation via excessive SETTINGS frames. The
+      same flaw lives in the standard library's bundled copy of the HTTP/2
+      stack and is fixed there by go1.26.9 / go1.27.2, which is why the gate
+      lists it twice against this binary (once as x/net, once as stdlib) and
+      why this change also raises GO_VERSION. artifact-keeper's Docker
+      Publish gate reported it against usr/local/bin/trivy in the
+      scanner-adapter image on 2026-10-10 (artifact-keeper run 38087035953),
+      blocking every image publish from main. x/net/http2 is linked into the
+      binary (`go mod why golang.org/x/net/http2` on the v0.74.0 tree:
+      pkg/fanal/image/registry/azure -> Azure SDK azcore/runtime ->
+      x/net/http2; grpc's transport links it too). We do not claim to have
+      traced an attack path through Trivy; the gate is not reachability-aware
+      and the finding is HIGH with a fix.
+    vulnerable_range: "< 0.60.0"
+    first_patched: 0.60.0
+    upstream_status: >-
+      NOT bumped upstream. aquasecurity/trivy main and release v0.75.0 both
+      pin golang.org/x/net v0.59.0, and no aquasecurity/trivy PR moves it to
+      v0.60.0 yet (searched 2026-10-10). v0.60.0 was tagged on 2026-10-08.
+      Verified with:
+        gh api 'repos/aquasecurity/trivy/contents/go.mod?ref=main' \
+          --jq .content | base64 -d | grep 'golang.org/x/net '
+        gh pr list -R aquasecurity/trivy --search golang.org/x/net --state all
+    policy_exception: >-
+      This entry does NOT satisfy policy condition 2 ("upstream has already
+      made the same bump"), and is filed anyway. The reasoning, so it can be
+      argued with: condition 2 exists so we do not second-guess Aqua's
+      judgement about Trivy's dependencies, but the version here is the Go
+      team's own security release for this advisory, issued together with
+      the toolchain fix this repo already takes without asking Aqua
+      (GO_VERSION). The alternative the policy leaves is a suppression in
+      artifact-keeper's .trivyignore, whose header forbids exactly that when
+      a fixed version can be built against. Every module the bump drags along
+      lands on the version upstream release v0.75.0 already ships (the six
+      entries below). When upstream makes the bump this exception lapses on
+      its own and the entry becomes an ordinary one; update upstream_status
+      then. artifact-keeper's backend Dockerfile makes the same exception for
+      the same module in its grype and buildctl builds.
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/main/go.mod
+    advisory_reference: https://nvd.nist.gov/vuln/detail/CVE-2026-78669
+    removal_condition: >-
+      DELETE this entry, and its six mvs_consequence_of entries, the moment
+      TRIVY_VERSION moves to an upstream release whose go.mod pins
+      golang.org/x/net >= v0.60.0. Check with:
+        git show <tag>:go.mod | grep 'golang.org/x/net '
+      apply-overrides.sh fails the build on its own if that happens with this
+      entry still here, because `from: v0.58.0` will no longer match.
+    expires: 2026-11-10
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-10
+    expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`.
+  - module: golang.org/x/crypto
+    from: v0.55.0
+    to: v0.57.0
+    severity: NONE
+    mvs_consequence_of: golang.org/x/net
+    advisories:
+      - CVE-2026-78669
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-78669 and no advisory
+      is claimed against v0.55.0 by this entry. It is declared because `go get
+      golang.org/x/net@v0.60.0` moves it: x/net v0.60.0's own go.mod requires golang.org/x/crypto v0.57.0, so minimum-version selection
+      raises it and apply-overrides.sh's undeclared-change guard refuses to
+      build until the move is written down. Pinning it back is not available
+      without a `replace`. The advisories field carries the x/net ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.57.0 is exactly what upstream release v0.75.0 (2026-10-01) and
+      aquasecurity/trivy main pin for golang.org/x/crypto, so this is the
+      version upstream already chose, not ours. v0.74.0 pins v0.55.0. Verified
+      with:
+        gh api 'repos/aquasecurity/trivy/contents/go.mod?ref=v0.75.0' \
+          --jq .content | base64 -d | grep 'golang.org/x/'
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.75.0/go.mod
+    removal_condition: >-
+      DELETE together with the golang.org/x/net entry; it has no independent
+      life. If TRIVY_VERSION moves to v0.75.0 or later first, this entry goes
+      stale on its own (that release already pins v0.57.0) and
+      apply-overrides.sh stops the build until it is deleted.
+    expires: 2026-11-10
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-10
+    expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`.
+  - module: golang.org/x/mod
+    from: v0.40.0
+    to: v0.41.0
+    severity: NONE
+    mvs_consequence_of: golang.org/x/net
+    advisories:
+      - CVE-2026-78669
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-78669 and no advisory
+      is claimed against v0.40.0 by this entry. It is declared because `go get
+      golang.org/x/net@v0.60.0` moves it: x/text v0.42.0 (itself raised by x/net v0.60.0) requires golang.org/x/mod v0.41.0, so minimum-version selection
+      raises it and apply-overrides.sh's undeclared-change guard refuses to
+      build until the move is written down. Pinning it back is not available
+      without a `replace`. The advisories field carries the x/net ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.41.0 is exactly what upstream release v0.75.0 (2026-10-01) and
+      aquasecurity/trivy main pin for golang.org/x/mod, so this is the
+      version upstream already chose, not ours. v0.74.0 pins v0.40.0. Verified
+      with:
+        gh api 'repos/aquasecurity/trivy/contents/go.mod?ref=v0.75.0' \
+          --jq .content | base64 -d | grep 'golang.org/x/'
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.75.0/go.mod
+    removal_condition: >-
+      DELETE together with the golang.org/x/net entry; it has no independent
+      life. If TRIVY_VERSION moves to v0.75.0 or later first, this entry goes
+      stale on its own (that release already pins v0.41.0) and
+      apply-overrides.sh stops the build until it is deleted.
+    expires: 2026-11-10
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-10
+    expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`.
+  - module: golang.org/x/sync
+    from: v0.22.0
+    to: v0.23.0
+    severity: NONE
+    mvs_consequence_of: golang.org/x/net
+    advisories:
+      - CVE-2026-78669
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-78669 and no advisory
+      is claimed against v0.22.0 by this entry. It is declared because `go get
+      golang.org/x/net@v0.60.0` moves it: x/text v0.42.0 (itself raised by x/net v0.60.0) requires golang.org/x/sync v0.23.0, so minimum-version selection
+      raises it and apply-overrides.sh's undeclared-change guard refuses to
+      build until the move is written down. Pinning it back is not available
+      without a `replace`. The advisories field carries the x/net ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.23.0 is exactly what upstream release v0.75.0 (2026-10-01) and
+      aquasecurity/trivy main pin for golang.org/x/sync, so this is the
+      version upstream already chose, not ours. v0.74.0 pins v0.22.0. Verified
+      with:
+        gh api 'repos/aquasecurity/trivy/contents/go.mod?ref=v0.75.0' \
+          --jq .content | base64 -d | grep 'golang.org/x/'
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.75.0/go.mod
+    removal_condition: >-
+      DELETE together with the golang.org/x/net entry; it has no independent
+      life. If TRIVY_VERSION moves to v0.75.0 or later first, this entry goes
+      stale on its own (that release already pins v0.23.0) and
+      apply-overrides.sh stops the build until it is deleted.
+    expires: 2026-11-10
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-10
+    expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`.
+  - module: golang.org/x/sys
+    from: v0.47.0
+    to: v0.48.0
+    severity: NONE
+    mvs_consequence_of: golang.org/x/net
+    advisories:
+      - CVE-2026-78669
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-78669 and no advisory
+      is claimed against v0.47.0 by this entry. It is declared because `go get
+      golang.org/x/net@v0.60.0` moves it: x/net v0.60.0's own go.mod requires golang.org/x/sys v0.48.0, so minimum-version selection
+      raises it and apply-overrides.sh's undeclared-change guard refuses to
+      build until the move is written down. Pinning it back is not available
+      without a `replace`. The advisories field carries the x/net ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.48.0 is exactly what upstream release v0.75.0 (2026-10-01) and
+      aquasecurity/trivy main pin for golang.org/x/sys, so this is the
+      version upstream already chose, not ours. v0.74.0 pins v0.47.0. Verified
+      with:
+        gh api 'repos/aquasecurity/trivy/contents/go.mod?ref=v0.75.0' \
+          --jq .content | base64 -d | grep 'golang.org/x/'
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.75.0/go.mod
+    removal_condition: >-
+      DELETE together with the golang.org/x/net entry; it has no independent
+      life. If TRIVY_VERSION moves to v0.75.0 or later first, this entry goes
+      stale on its own (that release already pins v0.48.0) and
+      apply-overrides.sh stops the build until it is deleted.
+    expires: 2026-11-10
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-10
+    expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`.
+  - module: golang.org/x/term
+    from: v0.45.0
+    to: v0.46.0
+    severity: NONE
+    mvs_consequence_of: golang.org/x/net
+    advisories:
+      - CVE-2026-78669
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-78669 and no advisory
+      is claimed against v0.45.0 by this entry. It is declared because `go get
+      golang.org/x/net@v0.60.0` moves it: x/net v0.60.0's own go.mod requires golang.org/x/term v0.46.0, so minimum-version selection
+      raises it and apply-overrides.sh's undeclared-change guard refuses to
+      build until the move is written down. Pinning it back is not available
+      without a `replace`. The advisories field carries the x/net ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.46.0 is exactly what upstream release v0.75.0 (2026-10-01) and
+      aquasecurity/trivy main pin for golang.org/x/term, so this is the
+      version upstream already chose, not ours. v0.74.0 pins v0.45.0. Verified
+      with:
+        gh api 'repos/aquasecurity/trivy/contents/go.mod?ref=v0.75.0' \
+          --jq .content | base64 -d | grep 'golang.org/x/'
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.75.0/go.mod
+    removal_condition: >-
+      DELETE together with the golang.org/x/net entry; it has no independent
+      life. If TRIVY_VERSION moves to v0.75.0 or later first, this entry goes
+      stale on its own (that release already pins v0.46.0) and
+      apply-overrides.sh stops the build until it is deleted.
+    expires: 2026-11-10
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-10
+    expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`.
+  - module: golang.org/x/text
+    from: v0.41.0
+    to: v0.42.0
+    severity: NONE
+    mvs_consequence_of: golang.org/x/net
+    advisories:
+      - CVE-2026-78669
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-78669 and no advisory
+      is claimed against v0.41.0 by this entry. It is declared because `go get
+      golang.org/x/net@v0.60.0` moves it: x/net v0.60.0's own go.mod requires golang.org/x/text v0.42.0, so minimum-version selection
+      raises it and apply-overrides.sh's undeclared-change guard refuses to
+      build until the move is written down. Pinning it back is not available
+      without a `replace`. The advisories field carries the x/net ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.42.0 is exactly what upstream release v0.75.0 (2026-10-01) and
+      aquasecurity/trivy main pin for golang.org/x/text, so this is the
+      version upstream already chose, not ours. v0.74.0 pins v0.41.0. Verified
+      with:
+        gh api 'repos/aquasecurity/trivy/contents/go.mod?ref=v0.75.0' \
+          --jq .content | base64 -d | grep 'golang.org/x/'
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.75.0/go.mod
+    removal_condition: >-
+      DELETE together with the golang.org/x/net entry; it has no independent
+      life. If TRIVY_VERSION moves to v0.75.0 or later first, this entry goes
+      stale on its own (that release already pins v0.42.0) and
+      apply-overrides.sh stops the build until it is deleted.
+    expires: 2026-11-10
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-10
     expect_linked: true
 
 # THE THREE ENTRIES AFTER IT are not independent findings. `go get

@@ -163,7 +163,7 @@ rebuild and is not endorsed by or affiliated with Aqua Security.
 | Runtime base | `registry.access.redhat.com/ubi9/ubi-micro` (no package manager) |
 | Builder base | `registry.access.redhat.com/ubi9/ubi` |
 | Trivy | `v0.74.0` @ `e1fd17a0ea4a8cf24bc4b4dd7e2cfbf4bb31b994` |
-| Go toolchain | 1.26.7 (official tarball, sha256-pinned) |
+| Go toolchain | 1.26.9 (official tarball, sha256-pinned) |
 | Platforms | `linux/amd64`, `linux/arm64` |
 | User | `1001:0`, `/sbin/nologin` |
 | Entrypoint | `/usr/local/bin/trivy` |
@@ -206,7 +206,7 @@ Everything else that feeds a result is pinned too, on the same reasoning:
 
 ### Go toolchain choice
 
-Trivy v0.74.0's `go.mod` requires `go 1.26.3`. We build with **1.26.7**, the
+Trivy v0.74.0's `go.mod` requires `go 1.26.3`. We build with **1.26.9**, the
 newest patch of that minor. The Go standard library is compiled into the
 binary, so the toolchain patch level directly determines which stdlib CVEs our
 gate reports against this image; building with the minimum permitted patch

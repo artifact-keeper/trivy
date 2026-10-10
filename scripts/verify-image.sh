@@ -30,6 +30,14 @@
 #                   shape either way: it proves the version claim landed IN THE
 #                   SHIPPED BINARY, whether it got there via upstream's pin or
 #                   via one of ours.
+#                   Since 2026-10-10 it tracks golang.org/x/net v0.58.0 ->
+#                   v0.60.0 (CVE-2026-78669), the override that unblocked
+#                   artifact-keeper's 1.11.0 publish. The x/mod check had to
+#                   move anyway: that override's MVS set raises x/mod to
+#                   v0.41.0, so an exact match on v0.40.0 would fail on a
+#                   binary that is strictly newer. CVE-2026-78669 is also a
+#                   stdlib advisory, so "not reported" here covers the
+#                   GO_VERSION bump to 1.26.9 as well as the module.
 #   5. HARDENING  — non-root numeric UID, no package manager, licences present.
 #
 # Requires: docker, python3.
@@ -38,10 +46,10 @@ set -euo pipefail
 
 IMAGE="${1:-ak-trivy:dev}"
 EXPECT_VERSION="${EXPECT_VERSION:-0.74.0}"
-OVERRIDE_MODULE="${OVERRIDE_MODULE:-golang.org/x/mod}"
-OVERRIDE_BAD="${OVERRIDE_BAD:-v0.38.0}"
-OVERRIDE_GOOD="${OVERRIDE_GOOD:-v0.40.0}"
-OVERRIDE_CVE="${OVERRIDE_CVE:-CVE-2026-56864}"
+OVERRIDE_MODULE="${OVERRIDE_MODULE:-golang.org/x/net}"
+OVERRIDE_BAD="${OVERRIDE_BAD:-v0.58.0}"
+OVERRIDE_GOOD="${OVERRIDE_GOOD:-v0.60.0}"
+OVERRIDE_CVE="${OVERRIDE_CVE:-CVE-2026-78669}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_VOL="ak-trivy-verify-cache"
