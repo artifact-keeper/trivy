@@ -63,6 +63,18 @@ trivy_version: v0.74.0
 # is a DECLARED EXCEPTION to policy condition 2 and says so in its own
 # `policy_exception` field; read that before copying its shape.
 #
+# ONE MORE ENTRY, added 2026-10-16 against v0.74.0: github.com/containerd/
+# containerd/v2 v2.3.3 -> v2.3.4 for CVE-2026-95837 (HIGH), which turned
+# artifact-keeper's Docker Publish red against the scanner-adapter image on
+# 2026-10-17 and blocked the 1.11.1 cut. It is a DECLARED EXCEPTION to BOTH
+# policy conditions 2 and 3, and the entry says why: upstream's own fix is
+# v2.4.1 in releases v0.75.0 and v0.76.0, and TRIVY_VERSION cannot move to
+# either yet because artifact-keeper's scanner-adapter requires the bundled
+# client and the trivy server sidecar to report the same version, and the
+# sidecar is pinned at 0.74.0 everywhere (artifact-keeper#4712 is the
+# coordinated bump). The patch-line fix is the smallest change that clears
+# the gate without moving the client ahead of the server.
+#
 # Re-reviewed the four grpc entries on the same day, and condition 3 no
 # longer holds for them: upstream v0.75.0 (2026-10-01) pins grpc v1.83.2 and
 # all three consequences at their `to` versions. The policy answer is to bump
@@ -563,6 +575,142 @@ overrides:
 # and are deleted with it; each one records upstream main pinning the same
 # version, so this remains a reproduction of upstream's own graph rather than
 # a graph of our own invention.
+
+  - module: github.com/containerd/containerd/v2
+    from: v2.3.3
+    to: v2.3.4
+    severity: HIGH
+    advisories:
+      - CVE-2026-95837
+      - GHSA-p7v4-vr35-mj6f
+    summary: >-
+      CVE-2026-95837 (HIGH, fixed in containerd v2.2.7 / v2.3.4): the CRI
+      plugin's checkpoint restore bypasses the destination container's
+      security context, so a restored container can run with a security
+      context other than the one its destination pod specifies. Trivy links
+      containerd/v2 for its containerd image source (pkg/fanal/image/daemon,
+      the `--image-src containerd` path) and runs no CRI plugin, so we do not
+      claim an attack path through Trivy; the gate is not reachability-aware,
+      the finding is HIGH with a fix, and it failed artifact-keeper's Docker
+      Publish security gate against usr/local/bin/trivy in the
+      scanner-adapter image on 2026-10-17 (artifact-keeper run 38987892375),
+      blocking the 1.11.1 release chain.
+    vulnerable_range: ">= 2.3.0, < 2.3.4 (and >= 2.1.0, < 2.2.7)"
+    first_patched: 2.3.4
+    upstream_status: >-
+      Upstream fixed this by moving to the next minor, not the patch: main,
+      v0.75.0 (2026-10-01) and v0.76.0 (2026-10-14) all pin
+      github.com/containerd/containerd/v2 v2.4.1. No upstream release on the
+      v0.74 line exists or will exist. Verified with:
+        git show v0.75.0:go.mod | grep containerd/containerd/v2
+        git show v0.76.0:go.mod | grep containerd/containerd/v2
+    policy_exception: >-
+      This entry satisfies condition 1 only, and is filed anyway. Condition 2
+      ("upstream has already made the same bump"): upstream's bump is to
+      v2.4.1, a minor; this entry takes v2.3.4, the containerd patch release
+      issued for the same advisory on the line v0.74.0 already uses, so the
+      module graph moves as little as possible. Condition 3 ("no upstream
+      release carries the fix"): v0.75.0 and v0.76.0 carry it, and the
+      policy answer would be to bump TRIVY_VERSION. That cannot be done here
+      in isolation: artifact-keeper's scanner-adapter (docker/scanner-adapter/
+      remote.go, checkTrivyServer) refuses to scan unless the trivy server
+      reports the same version as the bundled client, and the server sidecar
+      is pinned at ghcr.io/aquasecurity/trivy:0.74.0 in artifact-keeper's
+      compose files, workflows and Helm chart, so a client-only bump breaks
+      every deployment that runs the sidecar. The coordinated client+server
+      bump to v0.76.0 is artifact-keeper#4712; when it lands this entry is
+      deleted with the whole list. The alternative the policy leaves, a
+      suppression in artifact-keeper's .trivyignore, is forbidden by that
+      file's header when a fixed version can be built against.
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.76.0/go.mod
+    advisory_reference: https://github.com/advisories/GHSA-p7v4-vr35-mj6f
+    removal_condition: >-
+      DELETE this entry the moment TRIVY_VERSION moves to an upstream release
+      whose go.mod pins github.com/containerd/containerd/v2 >= v2.3.4 (every
+      release from v0.75.0 on does). Check with:
+        git show <tag>:go.mod | grep containerd/containerd/v2
+      apply-overrides.sh fails the build on its own if that happens with this
+      entry still here, because `from: v2.3.3` will no longer match.
+    expires: 2026-11-30
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-16
+    expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`.
+  - module: k8s.io/client-go
+    from: v0.36.1
+    to: v0.36.3
+    severity: NONE
+    mvs_consequence_of: github.com/containerd/containerd/v2
+    advisories:
+      - CVE-2026-95837
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-95837 and no advisory
+      is claimed against v0.36.1 by this entry. It is declared because `go get
+      github.com/containerd/containerd/v2@v2.3.4` moves it: containerd
+      v2.3.4's own go.mod requires k8s.io/client-go v0.36.3, so minimum-version
+      selection raises it and apply-overrides.sh's undeclared-change guard
+      refuses to build until the move is written down. Measured on a clean
+      v0.74.0 checkout on 2026-10-16: the bump moves exactly containerd/v2,
+      k8s.io/client-go and k8s.io/component-base, nothing else. The
+      advisories field carries the containerd ID as provenance for the move,
+      not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.36.3 is a patch on the k8s 0.36 line that v0.74.0 already uses
+      (v0.74.0 pins v0.36.1). Upstream releases v0.75.0 and v0.76.0 pin
+      v0.37.0, so this moves toward, not past, the version upstream chose.
+      Verified with:
+        git show v0.76.0:go.mod | grep 'k8s.io/client-go '
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.76.0/go.mod
+    removal_condition: >-
+      DELETE together with the github.com/containerd/containerd/v2 entry; it
+      has no independent life. If TRIVY_VERSION moves to v0.75.0 or later
+      first, this entry goes stale on its own (those releases pin v0.37.0)
+      and apply-overrides.sh stops the build until it is deleted.
+    expires: 2026-11-30
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-16
+    expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`.
+  - module: k8s.io/component-base
+    from: v0.36.1
+    to: v0.36.3
+    severity: NONE
+    mvs_consequence_of: github.com/containerd/containerd/v2
+    advisories:
+      - CVE-2026-95837
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-95837 and no advisory
+      is claimed against v0.36.1 by this entry. It is declared because `go get
+      github.com/containerd/containerd/v2@v2.3.4` moves it: containerd
+      v2.3.4's own go.mod requires k8s.io/component-base v0.36.3, so minimum-version
+      selection raises it and apply-overrides.sh's undeclared-change guard
+      refuses to build until the move is written down. Measured on a clean
+      v0.74.0 checkout on 2026-10-16: the bump moves exactly containerd/v2,
+      k8s.io/client-go and k8s.io/component-base, nothing else. The
+      advisories field carries the containerd ID as provenance for the move,
+      not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.36.3 is a patch on the k8s 0.36 line that v0.74.0 already uses
+      (v0.74.0 pins v0.36.1). Upstream releases v0.75.0 and v0.76.0 pin
+      v0.37.0, so this moves toward, not past, the version upstream chose.
+      Verified with:
+        git show v0.76.0:go.mod | grep 'k8s.io/component-base '
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.76.0/go.mod
+    removal_condition: >-
+      DELETE together with the github.com/containerd/containerd/v2 entry; it
+      has no independent life. If TRIVY_VERSION moves to v0.75.0 or later
+      first, this entry goes stale on its own (those releases pin v0.37.0)
+      and apply-overrides.sh stops the build until it is deleted.
+    expires: 2026-11-30
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-16
+    expect_linked: true
 
 # ---------------------------------------------------------------------------
 # History
