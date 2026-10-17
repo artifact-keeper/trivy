@@ -38,6 +38,10 @@
 #                   binary that is strictly newer. CVE-2026-78669 is also a
 #                   stdlib advisory, so "not reported" here covers the
 #                   GO_VERSION bump to 1.26.9 as well as the module.
+#                   At v0.76.0 (2026-10-17) upstream pins x/net v0.60.0
+#                   itself and the override is gone; the check keeps the same
+#                   module and CVE, now as a regression guard on upstream's
+#                   pin and on GO_VERSION 1.27.2.
 #   5. HARDENING  — non-root numeric UID, no package manager, licences present.
 #
 # Requires: docker, python3.
@@ -45,7 +49,7 @@
 set -euo pipefail
 
 IMAGE="${1:-ak-trivy:dev}"
-EXPECT_VERSION="${EXPECT_VERSION:-0.74.0}"
+EXPECT_VERSION="${EXPECT_VERSION:-0.76.0}"
 OVERRIDE_MODULE="${OVERRIDE_MODULE:-golang.org/x/net}"
 OVERRIDE_BAD="${OVERRIDE_BAD:-v0.58.0}"
 OVERRIDE_GOOD="${OVERRIDE_GOOD:-v0.60.0}"
