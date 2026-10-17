@@ -63,7 +63,7 @@ trivy_version: v0.74.0
 # is a DECLARED EXCEPTION to policy condition 2 and says so in its own
 # `policy_exception` field; read that before copying its shape.
 #
-# ONE MORE ENTRY, added 2026-10-16 against v0.74.0: github.com/containerd/
+# SIX MORE ENTRIES, added 2026-10-16/17 against v0.74.0: github.com/containerd/
 # containerd/v2 v2.3.3 -> v2.3.4 for CVE-2026-95837 (HIGH), which turned
 # artifact-keeper's Docker Publish red against the scanner-adapter image on
 # 2026-10-17 and blocked the 1.11.1 cut. It is a DECLARED EXCEPTION to BOTH
@@ -73,7 +73,10 @@ trivy_version: v0.74.0
 # client and the trivy server sidecar to report the same version, and the
 # sidecar is pinned at 0.74.0 everywhere (artifact-keeper#4712 is the
 # coordinated bump). The patch-line fix is the smallest change that clears
-# the gate without moving the client ahead of the server.
+# the gate without moving the client ahead of the server. Its five
+# minimum-version-selection consequences (k8s.io/client-go, component-base,
+# cri-api, cri-client, cri-streaming) are declared with it; the three cri-*
+# modules are not linked into the binary and say so.
 #
 # Re-reviewed the four grpc entries on the same day, and condition 3 no
 # longer holds for them: upstream v0.75.0 (2026-10-01) pins grpc v1.83.2 and
@@ -711,6 +714,150 @@ overrides:
     filed_by: artifact-keeper platform
     reviewed: 2026-10-16
     expect_linked: true
+
+  # Not an independent security fix — see `mvs_consequence_of`. Not linked.
+  - module: k8s.io/cri-api
+    from: v0.36.0
+    to: v0.36.3
+    severity: NONE
+    mvs_consequence_of: github.com/containerd/containerd/v2
+    advisories:
+      - CVE-2026-95837
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-95837 and no advisory
+      is claimed against v0.36.0 by this entry. It is declared because `go get
+      github.com/containerd/containerd/v2@v2.3.4` moves it in the resolved
+      module graph (`go list -m all`): containerd v2.3.4 requires k8s.io/cri-api
+      v0.36.3, so minimum-version selection raises it and apply-overrides.sh's
+      undeclared-change guard refuses to build until the move is written
+      down. It is not in Trivy's own go.mod (it enters only through
+      containerd), which is why the go.mod-only measurement that found
+      k8s.io/client-go and k8s.io/component-base missed it; the guard's full
+      graph diff on 2026-10-17 (run 38992515819) is what surfaced the three
+      k8s.io/cri-* modules. The advisories field carries the containerd ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.36.3 is a patch on the k8s 0.36 line that v0.74.0's graph already
+      resolves (v0.74.0 resolves v0.36.0). Upstream releases v0.75.0 and
+      v0.76.0 resolve the k8s 0.37 line through containerd v2.4.1, so this
+      moves toward, not past, the version upstream chose.
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.76.0/go.mod
+    removal_condition: >-
+      DELETE together with the github.com/containerd/containerd/v2 entry; it
+      has no independent life. If TRIVY_VERSION moves to v0.75.0 or later
+      first, this entry goes stale on its own and apply-overrides.sh stops
+      the build until it is deleted.
+    expires: 2026-11-30
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-17
+    expect_linked: false
+    linked_justification: >-
+      Trivy does not use the CRI client, API or streaming packages; they are
+      requirements of containerd's own module graph that MVS must resolve but
+      the linker never pulls in. Measured with `go version -m` on the
+      0.74.0-r4 binary (ghcr.io/artifact-keeper/trivy@sha256:29f16523...):
+      no k8s.io/cri-* module appears in its build info at any version, while
+      containerd/v2, k8s.io/client-go and k8s.io/component-base do. The
+      override is carried only to make the graph move explicit, as the guard
+      requires; it changes nothing in the shipped binary.
+
+  # Not an independent security fix — see `mvs_consequence_of`. Not linked.
+  - module: k8s.io/cri-client
+    from: v0.36.0
+    to: v0.36.3
+    severity: NONE
+    mvs_consequence_of: github.com/containerd/containerd/v2
+    advisories:
+      - CVE-2026-95837
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-95837 and no advisory
+      is claimed against v0.36.0 by this entry. It is declared because `go get
+      github.com/containerd/containerd/v2@v2.3.4` moves it in the resolved
+      module graph (`go list -m all`): containerd v2.3.4 requires k8s.io/cri-client
+      v0.36.3, so minimum-version selection raises it and apply-overrides.sh's
+      undeclared-change guard refuses to build until the move is written
+      down. It is not in Trivy's own go.mod (it enters only through
+      containerd), which is why the go.mod-only measurement that found
+      k8s.io/client-go and k8s.io/component-base missed it; the guard's full
+      graph diff on 2026-10-17 (run 38992515819) is what surfaced the three
+      k8s.io/cri-* modules. The advisories field carries the containerd ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.36.3 is a patch on the k8s 0.36 line that v0.74.0's graph already
+      resolves (v0.74.0 resolves v0.36.0). Upstream releases v0.75.0 and
+      v0.76.0 resolve the k8s 0.37 line through containerd v2.4.1, so this
+      moves toward, not past, the version upstream chose.
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.76.0/go.mod
+    removal_condition: >-
+      DELETE together with the github.com/containerd/containerd/v2 entry; it
+      has no independent life. If TRIVY_VERSION moves to v0.75.0 or later
+      first, this entry goes stale on its own and apply-overrides.sh stops
+      the build until it is deleted.
+    expires: 2026-11-30
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-17
+    expect_linked: false
+    linked_justification: >-
+      Trivy does not use the CRI client, API or streaming packages; they are
+      requirements of containerd's own module graph that MVS must resolve but
+      the linker never pulls in. Measured with `go version -m` on the
+      0.74.0-r4 binary (ghcr.io/artifact-keeper/trivy@sha256:29f16523...):
+      no k8s.io/cri-* module appears in its build info at any version, while
+      containerd/v2, k8s.io/client-go and k8s.io/component-base do. The
+      override is carried only to make the graph move explicit, as the guard
+      requires; it changes nothing in the shipped binary.
+
+  # Not an independent security fix — see `mvs_consequence_of`. Not linked.
+  - module: k8s.io/cri-streaming
+    from: v0.36.0
+    to: v0.36.3
+    severity: NONE
+    mvs_consequence_of: github.com/containerd/containerd/v2
+    advisories:
+      - CVE-2026-95837
+    summary: >-
+      THIS MODULE IS NOT ITSELF THE SUBJECT OF CVE-2026-95837 and no advisory
+      is claimed against v0.36.0 by this entry. It is declared because `go get
+      github.com/containerd/containerd/v2@v2.3.4` moves it in the resolved
+      module graph (`go list -m all`): containerd v2.3.4 requires k8s.io/cri-streaming
+      v0.36.3, so minimum-version selection raises it and apply-overrides.sh's
+      undeclared-change guard refuses to build until the move is written
+      down. It is not in Trivy's own go.mod (it enters only through
+      containerd), which is why the go.mod-only measurement that found
+      k8s.io/client-go and k8s.io/component-base missed it; the guard's full
+      graph diff on 2026-10-17 (run 38992515819) is what surfaced the three
+      k8s.io/cri-* modules. The advisories field carries the containerd ID as
+      provenance for the move, not as a claim about this module.
+    vulnerable_range: "n/a — not a vulnerability fix"
+    first_patched: "n/a"
+    upstream_status: >-
+      v0.36.3 is a patch on the k8s 0.36 line that v0.74.0's graph already
+      resolves (v0.74.0 resolves v0.36.0). Upstream releases v0.75.0 and
+      v0.76.0 resolve the k8s 0.37 line through containerd v2.4.1, so this
+      moves toward, not past, the version upstream chose.
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.76.0/go.mod
+    removal_condition: >-
+      DELETE together with the github.com/containerd/containerd/v2 entry; it
+      has no independent life. If TRIVY_VERSION moves to v0.75.0 or later
+      first, this entry goes stale on its own and apply-overrides.sh stops
+      the build until it is deleted.
+    expires: 2026-11-30
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-17
+    expect_linked: false
+    linked_justification: >-
+      Trivy does not use the CRI client, API or streaming packages; they are
+      requirements of containerd's own module graph that MVS must resolve but
+      the linker never pulls in. Measured with `go version -m` on the
+      0.74.0-r4 binary (ghcr.io/artifact-keeper/trivy@sha256:29f16523...):
+      no k8s.io/cri-* module appears in its build info at any version, while
+      containerd/v2, k8s.io/client-go and k8s.io/component-base do. The
+      override is carried only to make the graph move explicit, as the guard
+      requires; it changes nothing in the shipped binary.
 
 # ---------------------------------------------------------------------------
 # History
