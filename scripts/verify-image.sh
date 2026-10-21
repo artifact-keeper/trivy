@@ -41,7 +41,7 @@
 #                   At v0.76.0 (2026-10-17) upstream pins x/net v0.60.0
 #                   itself and the override is gone; the check keeps the same
 #                   module and CVE, now as a regression guard on upstream's
-#                   pin and on GO_VERSION 1.27.2.
+#                   pin and on GO_VERSION (1.27.3 since 2026-10-21).
 #   5. HARDENING  — non-root numeric UID, no package manager, licences present.
 #
 # Requires: docker, python3.
