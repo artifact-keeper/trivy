@@ -99,9 +99,14 @@ FROM --platform=$BUILDPLATFORM ${UBI_IMAGE} AS toolchain
 # patch of that minor and the 1.27 half of the same paired security release
 # as 1.26.9, so the three stdlib advisories above stay fixed. Upstream
 # v0.76.0 now pins golang.org/x/net v0.60.0 itself; the override is gone.
-ARG GO_VERSION=1.27.2
-ARG GO_SHA256_AMD64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
-ARG GO_SHA256_ARM64=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
+#
+# 1.27.2 -> 1.27.3 (2026-10-21): artifact-keeper's pinned-base-image watch
+# reported HIGH CVE-2026-111943 in this image's binary (stdlib v1.27.2, fixed
+# in 1.26.10 and 1.27.3). Stdlib only, so it is a GO_VERSION bump and nothing
+# else moves: same Trivy tag and commit, same overrides, same base digests.
+ARG GO_VERSION=1.27.3
+ARG GO_SHA256_AMD64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+ARG GO_SHA256_ARM64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
 ARG BUILDARCH
 
 RUN dnf install -y --nodocs --setopt=install_weak_deps=0 \
