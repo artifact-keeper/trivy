@@ -202,10 +202,11 @@ RUN chmod +x /policy/*.sh && /policy/apply-overrides.sh /src /policy/overrides.y
 # dates are pinned to upstream's commit date so the resulting SHA is
 # reproducible.
 #
-# When overrides.yaml is empty — as it is at v0.76.0 — the tree is never
-# dirtied and this whole block is a no-op: the checkout is already clean and
-# already at the tag, so the two `test`s below just assert that. The block
-# stays because the next override to be filed must not have to reinvent it.
+# When overrides.yaml is empty (as it was for 0.76.0-r1 and -r2) the tree is
+# never dirtied and this whole block is a no-op: the checkout is already clean
+# and already at the tag, so the two `test`s below just assert that. With the
+# go-jose override (0.76.0-r3) it commits the go.mod/go.sum change as
+# described above.
 RUN set -eux; \
     if [ -n "$(git status --porcelain)" ]; then \
         d="$(git log -1 --format=%cI)"; \
