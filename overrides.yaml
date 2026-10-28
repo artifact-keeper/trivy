@@ -47,21 +47,87 @@ version: 1
 # version bump forces a fresh review of every entry below.
 trivy_version: v0.76.0
 
-# EMPTY BY DESIGN — we are building pristine upstream v0.76.0.
+# ONE ENTRY, go-jose (added 2026-10-28 for 0.76.0-r3).
 #
-# This is the intended steady state, not a gap. An override exists only to
-# carry a fix during the window between upstream committing it and upstream
-# releasing it; when the release lands, the entry is deleted and the list
+# The steady state is still an empty list: an override exists only to carry
+# a fix during the window between upstream committing it and upstream
+# releasing it, and when the release lands the entry is deleted and the list
 # shrinks back to nothing. apply-overrides.sh handles the empty list
-# explicitly ("no overrides declared — building pristine upstream <tag>").
-# The History section below records what was here and why it left.
+# explicitly ("no overrides declared, building pristine upstream <tag>").
+# The History section below records what was here before and why it left.
 
-overrides: []
+overrides:
+  - module: github.com/go-jose/go-jose/v4
+    from: v4.1.5
+    to: v4.1.6
+    severity: HIGH
+    advisories:
+      - CVE-2026-116587
+      - GHSA-mgcc-cww5-fp2q
+    summary: >-
+      Go JOSE: denial of service when parsing JWKs that contain RSA keys
+      (published 2026-10-27). go-jose enters Trivy's graph indirectly (it is
+      `// indirect` in Trivy's go.mod), required by the sigstore modules
+      (github.com/sigstore/sigstore, github.com/sigstore/rekor) behind
+      attestation and signature handling and by github.com/spiffe/go-spiffe/v2,
+      and it is linked into the binary: artifact-keeper's Docker Publish
+      Trivy gate flagged it in usr/local/bin/trivy's Go build info in the
+      scanner-adapter image (artifact-keeper/artifact-keeper run
+      40671050571, 2026-10-28), which is what our gobinary-based gate scores
+      too. We do not claim to have traced a reachable attack path through
+      Trivy itself; the gate is not reachability-aware and neither is
+      artifact-keeper's, so the finding blocks the publish either way and the
+      fix is a version bump upstream has already made. go-jose v4.1.6's own
+      go.mod has no requirements (go 1.24.0), so `go get` moves nothing else
+      and this entry has no mvs_consequence_of companions;
+      apply-overrides.sh's undeclared-change guard enforces that.
+    vulnerable_range: "<= 4.1.5"
+    first_patched: 4.1.6
+    upstream_status: >-
+      Bumped on aquasecurity/trivy main to v4.1.6 at 8b5ad79c
+      (aquasecurity/trivy#11488, merged 2026-10-28); go.mod on main pins
+      github.com/go-jose/go-jose/v4 v4.1.6. No upstream release carries it:
+      v0.76.0 (the tag we build) and v0.76.1 (the latest release at time of
+      writing) both pin v4.1.5. We stay on v0.76.0 rather than move to
+      v0.76.1, because v0.76.1 would not clear this advisory and
+      artifact-keeper's scanner adapter pairs with a 0.76.0 trivy server in
+      client/server mode. Verified with:
+        gh api 'repos/aquasecurity/trivy/contents/go.mod?ref=<ref>' \
+          --jq .content | base64 -d | grep go-jose
+        gh api repos/aquasecurity/trivy/releases --jq '.[0].tag_name'
+    upstream_reference: https://github.com/aquasecurity/trivy/pull/11488
+    advisory_reference: https://github.com/advisories/GHSA-mgcc-cww5-fp2q
+    removal_condition: >-
+      DELETE this entry the moment we bump TRIVY_VERSION to an upstream
+      release whose go.mod pins github.com/go-jose/go-jose/v4 >= v4.1.6.
+      Check with:
+        git show <tag>:go.mod | grep go-jose
+      apply-overrides.sh will fail the build on its own if that happens and
+      this entry is still here, because `from: v4.1.5` will no longer match.
+    expires: 2026-12-28
+    filed_by: artifact-keeper platform
+    reviewed: 2026-10-28
+    expect_linked: true
 
 # ---------------------------------------------------------------------------
 # History
 # ---------------------------------------------------------------------------
 #
+# 2026-10-28, v0.76.0 (image 0.76.0-r3). ONE entry ADDED, the list's first
+# since it emptied on 2026-10-17:
+#
+#   github.com/go-jose/go-jose/v4 v4.1.5 -> v4.1.6  (CVE-2026-116587,
+#   GHSA-mgcc-cww5-fp2q, HIGH). All three policy conditions hold: our gate
+#   and artifact-keeper's flag it in the binary (artifact-keeper Docker
+#   Publish run 40671050571 failed on it against the 0.76.0-r2 image);
+#   upstream made the same bump on main (aquasecurity/trivy#11488, merge
+#   commit 8b5ad79c, 2026-10-28); and no release carries it (v0.76.0 and
+#   v0.76.1 both pin v4.1.5). TRIVY_VERSION stays at v0.76.0: moving to
+#   v0.76.1 would not clear the advisory and would break the 0.76.0
+#   client/server pairing with artifact-keeper's scanner adapter. No
+#   mvs_consequence_of entries: v4.1.6 requires nothing.
+#
+# ---------------------------------------------------------------------------
 # 2026-10-17, v0.74.0 -> v0.76.0 (artifact-keeper#4712). SEVENTEEN entries
 # deleted, the whole list, because upstream release v0.76.0 (2026-10-14,
 # commit 531360e5) pins every one of them at or above its `to` version. Each

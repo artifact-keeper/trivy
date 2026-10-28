@@ -80,6 +80,14 @@ exit status 0
 > is **empty again**; `overrides.yaml`'s History section records each entry
 > and the upstream version that retired it.
 
+> **Update (2026-10-28, 0.76.0-r3).** One entry is back:
+> `github.com/go-jose/go-jose/v4` v4.1.5 -> v4.1.6 (CVE-2026-116587 /
+> GHSA-mgcc-cww5-fp2q, HIGH), which failed artifact-keeper's Docker Publish
+> gate against the 0.76.0-r2 binary. Upstream bumped it on main
+> (aquasecurity/trivy#11488) but neither v0.76.0 nor v0.76.1 carries it, so
+> all three policy conditions hold. Trivy stays at v0.76.0, the version
+> artifact-keeper's scanner adapter pairs with.
+
 ---
 
 ## Override policy
@@ -250,8 +258,10 @@ Trivy's ldflags fallback cannot rescue this: `-trimpath` stops Go recording
 `-ldflags` in build info ([go.dev/issue/63432](https://go.dev/issue/63432)) and
 `-s -w` strips the ELF symbols it reads instead. So the build commits the
 override and moves the tag onto that commit, leaving a clean tree at the tag.
-(With `overrides.yaml` empty, as at v0.76.0, nothing dirties the tree and that
-step is a no-op — the checkout is already clean and already at the tag.)
+(With `overrides.yaml` empty, as at 0.76.0-r1 and -r2, nothing dirties the
+tree and that step is a no-op: the checkout is already clean and already at
+the tag. From 0.76.0-r3 the go-jose override dirties it again and the step
+does real work.)
 The artifact *is* Trivy 0.76.0 plus the declared patches and is scored as such;
 true upstream provenance is preserved in the OCI labels, in
 `/licenses/trivy/BUILDINFO.txt`, and in the commit's parent.

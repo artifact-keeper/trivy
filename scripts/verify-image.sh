@@ -42,6 +42,12 @@
 #                   itself and the override is gone; the check keeps the same
 #                   module and CVE, now as a regression guard on upstream's
 #                   pin and on GO_VERSION (1.27.3 since 2026-10-21).
+#                   Since 2026-10-28 (0.76.0-r3) it tracks
+#                   github.com/go-jose/go-jose/v4 v4.1.5 -> v4.1.6
+#                   (CVE-2026-116587), the override that unblocks
+#                   artifact-keeper's scanner-adapter publish. The x/net
+#                   regression guard this replaces is still covered by the
+#                   cve-gate job, which fails on any fixed HIGH/CRITICAL.
 #   5. HARDENING  — non-root numeric UID, no package manager, licences present.
 #
 # Requires: docker, python3.
@@ -50,10 +56,10 @@ set -euo pipefail
 
 IMAGE="${1:-ak-trivy:dev}"
 EXPECT_VERSION="${EXPECT_VERSION:-0.76.0}"
-OVERRIDE_MODULE="${OVERRIDE_MODULE:-golang.org/x/net}"
-OVERRIDE_BAD="${OVERRIDE_BAD:-v0.58.0}"
-OVERRIDE_GOOD="${OVERRIDE_GOOD:-v0.60.0}"
-OVERRIDE_CVE="${OVERRIDE_CVE:-CVE-2026-78669}"
+OVERRIDE_MODULE="${OVERRIDE_MODULE:-github.com/go-jose/go-jose/v4}"
+OVERRIDE_BAD="${OVERRIDE_BAD:-v4.1.5}"
+OVERRIDE_GOOD="${OVERRIDE_GOOD:-v4.1.6}"
+OVERRIDE_CVE="${OVERRIDE_CVE:-CVE-2026-116587}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_VOL="ak-trivy-verify-cache"
