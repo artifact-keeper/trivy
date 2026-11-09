@@ -88,6 +88,15 @@ exit status 0
 > all three policy conditions hold. Trivy stays at v0.76.0, the version
 > artifact-keeper's scanner adapter pairs with.
 
+> **Update (2026-11-09, 0.76.0-r4).** `golang.org/x/net` v0.60.0 -> v0.62.0
+> (CVE-2026-78661 / GO-2026-6860, HIGH, denial of service in
+> `golang.org/x/net/html`), plus the four `golang.org/x` modules it moves,
+> after the 0.76.0-r3 binary failed artifact-keeper's Docker Publish gate.
+> Upstream release v0.76.2 already ships it (and go-jose v4.1.6), so this
+> one is a declared exception to condition 3, like containerd at 0.74.0-r5:
+> the scanner adapter needs its trivy server on the same release, and the
+> client+server move to v0.76.2 empties the list again.
+
 ---
 
 ## Override policy
@@ -261,7 +270,7 @@ override and moves the tag onto that commit, leaving a clean tree at the tag.
 (With `overrides.yaml` empty, as at 0.76.0-r1 and -r2, nothing dirties the
 tree and that step is a no-op: the checkout is already clean and already at
 the tag. From 0.76.0-r3 the go-jose override dirties it again and the step
-does real work.)
+does real work, and from 0.76.0-r4 the x/net override does too.)
 The artifact *is* Trivy 0.76.0 plus the declared patches and is scored as such;
 true upstream provenance is preserved in the OCI labels, in
 `/licenses/trivy/BUILDINFO.txt`, and in the commit's parent.
