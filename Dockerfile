@@ -104,9 +104,15 @@ FROM --platform=$BUILDPLATFORM ${UBI_IMAGE} AS toolchain
 # reported HIGH CVE-2026-111943 in this image's binary (stdlib v1.27.2, fixed
 # in 1.26.10 and 1.27.3). Stdlib only, so it is a GO_VERSION bump and nothing
 # else moves: same Trivy tag and commit, same overrides, same base digests.
-ARG GO_VERSION=1.27.3
-ARG GO_SHA256_AMD64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
-ARG GO_SHA256_ARM64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+#
+# 1.27.3 -> 1.27.4 (2026-11-19): artifact-keeper's Docker Publish gate reported
+# HIGH CVE-2026-97054 (net/http: MaxBytesReader on HTTP/1 servers) in this
+# image's binary (stdlib v1.27.3, fixed in 1.26.11 and 1.27.4). Stdlib only,
+# so again a GO_VERSION bump and nothing else moves. Checksums are go.dev's
+# published sha256 for go1.27.4.linux-{amd64,arm64}.tar.gz.
+ARG GO_VERSION=1.27.4
+ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
+ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
 ARG BUILDARCH
 
 RUN dnf install -y --nodocs --setopt=install_weak_deps=0 \
