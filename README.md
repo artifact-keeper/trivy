@@ -97,6 +97,13 @@ exit status 0
 > the scanner adapter needs its trivy server on the same release, and the
 > client+server move to v0.76.2 empties the list again.
 
+> **Update (2026-11-20, 0.76.0-r6).** `github.com/containerd/containerd/v2`
+> v2.4.1 -> v2.4.2 (CVE-2026-95839, HIGH, containerd daemon crash via a
+> malformed digest), after the 0.76.0-r5 binary failed artifact-keeper's
+> Docker Publish gate. v0.76.2 ships it too, so it is the same declared
+> exception to condition 3 as x/net, retired by the same client+server move.
+> It moves no other module.
+
 ---
 
 ## Override policy
@@ -270,7 +277,8 @@ override and moves the tag onto that commit, leaving a clean tree at the tag.
 (With `overrides.yaml` empty, as at 0.76.0-r1 and -r2, nothing dirties the
 tree and that step is a no-op: the checkout is already clean and already at
 the tag. From 0.76.0-r3 the go-jose override dirties it again and the step
-does real work, and from 0.76.0-r4 the x/net override does too.)
+does real work, and from 0.76.0-r4 the x/net override does too, and from
+0.76.0-r6 the containerd one.)
 The artifact *is* Trivy 0.76.0 plus the declared patches and is scored as such;
 true upstream provenance is preserved in the OCI labels, in
 `/licenses/trivy/BUILDINFO.txt`, and in the commit's parent.

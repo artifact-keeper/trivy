@@ -56,6 +56,10 @@ trivy_version: v0.76.0
 # is a DECLARED EXCEPTION to policy condition 3, the same one the containerd
 # entry made for 0.74.0-r5, and says why in its `policy_exception` field.
 #
+# ONE MORE, added 2026-11-20 for 0.76.0-r6: github.com/containerd/containerd/v2
+# v2.4.1 -> v2.4.2 for CVE-2026-95839, the same declared exception to
+# condition 3 as x/net, with no mvs_consequence_of companions.
+#
 # The steady state is still an empty list: an override exists only to carry
 # a fix during the window between upstream committing it and upstream
 # releasing it, and when the release lands the entry is deleted and the list
@@ -315,10 +319,73 @@ overrides:
     reviewed: 2026-11-09
     expect_linked: true
 
+  - module: github.com/containerd/containerd/v2
+    from: v2.4.1
+    to: v2.4.2
+    severity: HIGH
+    advisories:
+      - CVE-2026-95839
+    summary: >-
+      containerd: image-triggered daemon crash via a malformed digest in a
+      subject-annotated descriptor (fixed in 2.2.10, 2.3.7 and 2.4.2).
+      artifact-keeper's Docker Publish Trivy gate flagged it in
+      usr/local/bin/trivy's Go build info in the scanner-adapter image at
+      v2.4.1, the version upstream v0.76.0 pins (artifact-keeper run
+      44839775004, 2026-11-20; artifact-keeper/artifact-keeper#6394).
+      containerd is linked: `go list -deps ./cmd/trivy` on the v0.76.0 tree
+      lists 61 containerd/v2 packages, for Trivy's containerd image source
+      (core/content, core/images, core/remotes and the client proxies). The
+      advisory names the containerd daemon, which Trivy is not, so we do not
+      claim a reachable path; the gate is not reachability-aware, so the
+      finding blocks the publish either way. Measured 2026-11-20 on the
+      v0.76.0 tree with the entries above applied, `go get
+      github.com/containerd/containerd/v2@v2.4.2` moves only that module, so
+      this entry has no mvs_consequence_of companions; apply-overrides.sh's
+      undeclared-change guard enforces that.
+    vulnerable_range: "< 2.2.10, 2.3.0 - 2.3.6, 2.4.0 - 2.4.1"
+    first_patched: 2.4.2
+    upstream_status: >-
+      Bumped upstream AND released: aquasecurity/trivy main and release
+      v0.76.2 (2026-11-05) both pin github.com/containerd/containerd/v2
+      v2.4.2. v0.76.0 (the tag we build) pins v2.4.1. Verified with:
+        git show <tag>:go.mod | grep 'containerd/containerd/v2 '
+    policy_exception: >-
+      Same exception, for the same reason, as the golang.org/x/net entry
+      above: conditions 1 and 2 hold, condition 3 does not, because v0.76.2
+      carries the fix. Bumping TRIVY_VERSION alone would break the scanner
+      adapter's version pairing with its 0.76.0 trivy server sidecar
+      (docker/scanner-adapter/remote.go, checkTrivyServer and
+      clientModeProvenance). The coordinated client+server move to v0.76.2
+      retires this entry with the x/net and go-jose ones. A suppression in
+      artifact-keeper's .trivyignore is forbidden by that file's header when
+      a fixed version can be built against.
+    upstream_reference: https://github.com/aquasecurity/trivy/blob/v0.76.2/go.mod
+    advisory_reference: https://avd.aquasec.com/nvd/cve-2026-95839
+    removal_condition: >-
+      DELETE this entry the moment TRIVY_VERSION moves to an upstream release
+      whose go.mod pins github.com/containerd/containerd/v2 >= v2.4.2
+      (v0.76.2 already does). Check with:
+        git show <tag>:go.mod | grep 'containerd/containerd/v2 '
+      apply-overrides.sh fails the build on its own if that happens with this
+      entry still here, because `from: v2.4.1` will no longer match.
+    expires: 2027-01-20
+    filed_by: artifact-keeper platform
+    reviewed: 2026-11-20
+    expect_linked: true
+
 # ---------------------------------------------------------------------------
 # History
 # ---------------------------------------------------------------------------
 #
+# 2026-11-20, v0.76.0 (image 0.76.0-r6). ONE entry ADDED:
+#
+#   github.com/containerd/containerd/v2 v2.4.1 -> v2.4.2  (CVE-2026-95839,
+#   HIGH). artifact-keeper Docker Publish has failed on it against the
+#   0.76.0-r5 image (run 44839775004). Conditions 1 and 2 hold, condition 3
+#   does not (v0.76.2 ships v2.4.2); it waits on the client+server move for
+#   the same reason as the x/net entry. Nothing else moves with it.
+#
+# ---------------------------------------------------------------------------
 # 2026-11-09, v0.76.0 (image 0.76.0-r4). FIVE entries ADDED next to go-jose:
 #
 #   golang.org/x/net v0.60.0 -> v0.62.0  (CVE-2026-78661, GO-2026-6860,
