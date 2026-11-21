@@ -52,6 +52,10 @@
 #                   again, v0.60.0 -> v0.62.0 (CVE-2026-78661), the newest
 #                   override. The go-jose check it replaces is covered the
 #                   same way, by the cve-gate job.
+#                   Since 2026-11-20 (0.76.0-r6) it tracks
+#                   github.com/containerd/containerd/v2 v2.4.1 -> v2.4.2
+#                   (CVE-2026-95839), the newest override; the x/net check it
+#                   replaces is covered by the cve-gate job.
 #   5. HARDENING  — non-root numeric UID, no package manager, licences present.
 #
 # Requires: docker, python3.
@@ -60,10 +64,10 @@ set -euo pipefail
 
 IMAGE="${1:-ak-trivy:dev}"
 EXPECT_VERSION="${EXPECT_VERSION:-0.76.0}"
-OVERRIDE_MODULE="${OVERRIDE_MODULE:-golang.org/x/net}"
-OVERRIDE_BAD="${OVERRIDE_BAD:-v0.60.0}"
-OVERRIDE_GOOD="${OVERRIDE_GOOD:-v0.62.0}"
-OVERRIDE_CVE="${OVERRIDE_CVE:-CVE-2026-78661}"
+OVERRIDE_MODULE="${OVERRIDE_MODULE:-github.com/containerd/containerd/v2}"
+OVERRIDE_BAD="${OVERRIDE_BAD:-v2.4.1}"
+OVERRIDE_GOOD="${OVERRIDE_GOOD:-v2.4.2}"
+OVERRIDE_CVE="${OVERRIDE_CVE:-CVE-2026-95839}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_VOL="ak-trivy-verify-cache"
